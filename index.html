@@ -46,7 +46,7 @@
         background: linear-gradient(90deg, #0b1e3a 0%, #12305c 100%);
         box-shadow: 0 2px 8px rgba(11, 30, 58, 0.25);
         position: relative;
-        z-index: 10;
+        z-index: 1001;
       }
 
       .header-left {
@@ -100,24 +100,17 @@
         letter-spacing: 0.5px;
       }
 
-      /* ===== 对话区 ===== */
+      /* ===== 对话区（SDK 渲染层与状态覆盖层） ===== */
       .chat-area {
         position: relative;
         height: calc(100dvh - 56px);
-        background: #ffffff;
+        background: #eef2f7;
         overflow: hidden;
       }
 
-      #chatFrame {
-        display: none;
+      #chatContainer {
         width: 100%;
         height: 100%;
-        border: 0;
-        background: #ffffff;
-      }
-
-      #chatFrame.visible {
-        display: block;
       }
 
       /* 引导卡片 */
@@ -129,6 +122,7 @@
         justify-content: center;
         padding: 24px;
         background: #eef2f7;
+        z-index: 2;
       }
 
       .guide-card.visible {
@@ -136,7 +130,7 @@
       }
 
       .guide-card-inner {
-        max-width: 360px;
+        max-width: 380px;
         width: 100%;
         padding: 28px 26px;
         text-align: center;
@@ -249,13 +243,16 @@
 
     <!-- ===== 对话区 ===== -->
     <main class="chat-area" id="chatArea">
-      <!-- 引导卡片（未配置对话链接时显示） -->
+      <!-- SDK 渲染容器 -->
+      <div id="chatContainer"></div>
+
+      <!-- 引导卡片（未配置智能体时显示） -->
       <div class="guide-card" id="guideCard">
         <div class="guide-card-inner">
           <div class="guide-icon" aria-hidden="true">⚙</div>
           <p class="guide-title">系统准备中</p>
           <p class="guide-desc">
-            请先在配置区填入智能体对话链接，即可开始智能检修辅助。
+            请先在配置区填入智能体对话信息（botId），即可开始智能检修辅助。
           </p>
         </div>
       </div>
@@ -271,93 +268,142 @@
         <span>⚠</span>
         <span>加载较慢，请检查网络或稍后刷新</span>
       </div>
-
-      <!-- 智能体对话窗口 -->
-      <iframe
-        id="chatFrame"
-        title="受电弓智能检修助手"
-        allow="microphone; clipboard-write"
-        allowfullscreen
-        referrerpolicy="no-referrer-when-downgrade"
-      ></iframe>
     </main>
 
     <script>
       // ====================== 配置区 ======================
-      // 把智能体发布后的公开对话链接粘贴到这里即可
+      // 智能体对话信息：使用官方 WebChat(WebSDK) 渲染对话组件，免 iframe。
+      // botId：进入智能体编排页面，URL 中 bot/ 后面的数字即为 ID。
+      // token：（可选）如需鉴权，填 PAT/OAuth 访问令牌；留空则使用免鉴权(unauth)。
       const CONFIG = {
-        CHAT_URL: ""
+        botId: "",
+        token: ""
       };
       // ====================================================
 
       (function () {
-        var frame = document.getElementById("chatFrame");
+        var SDK_URL =
+          "https://lf-cdn.coze.cn/obj/unpkg/flow-platform/chat-app-sdk/1.2.0-beta.20/libs/cn/index.js";
+        var LOAD_TIMEOUT_MS = 8000; // 8 秒超时兜底
+
         var loading = document.getElementById("loadingOverlay");
         var guide = document.getElementById("guideCard");
         var toast = document.getElementById("timeoutToast");
 
-        var LOAD_TIMEOUT_MS = 8000; // 8 秒超时兜底
+        var botId = (CONFIG.botId || "").trim();
         var timeoutTimer = null;
-        var loaded = false;
-        var failed = false;
 
-        function setup() {
-          var url = (CONFIG.CHAT_URL || "").trim();
+        function showGuide() {
+          guide.classList.add("visible");
+          loading.classList.remove("visible");
+        }
 
-          // 未配置对话链接：显示引导卡片
-          if (!url) {
-            guide.classList.add("visible");
-            frame.classList.remove("visible");
-            resetOverlay();
-            return;
+        function showTimeout() {
+          clearLoading(false);
+          toast.classList.add("visible");
+        }
+
+        function clearLoading(clearToast) {
+          loading.classList.remove("visible");
+          if (clearToast !== false) {
+            toast.classList.remove("visible");
           }
+        }
 
-          // 已配置：隐藏引导卡片，开始加载
-          guide.classList.remove("visible");
-          frame.src = url;
-          frame.classList.add("visible");
-          loading.classList.add("visible");
-          toast.classList.remove("visible");
+        function clearTimer() {
+          if (timeoutTimer) {
+            clearTimeout(timeoutTimer);
+            timeoutTimer = null;
+          }
+        }
 
-          // 8 秒超时兜底
-          timeoutTimer = setTimeout(function () {
-            if (!loaded) {
-              failed = true;
-              toast.classList.add("visible");
+        // 动态加载 WebChat SDK
+        function loadScript(src, onSuccess, onError) {
+          var existing = document.querySelector('script[data-chat-sdk]');
+          if (existing) {
+            if (window.CozeWebSDK) {
+              onSuccess();
+            } else {
+              existing.addEventListener("load", onSuccess);
+              existing.addEventListener("error", onError);
             }
-          }, LOAD_TIMEOUT_MS);
-        }
-
-        function resetOverlay() {
-          loaded = false;
-          failed = false;
-          if (timeoutTimer) {
-            clearTimeout(timeoutTimer);
-            timeoutTimer = null;
-          }
-          loading.classList.remove("visible");
-          toast.classList.remove("visible");
-        }
-
-        function onFrameLoad() {
-          if (failed) {
-            // 已提示超时，保持提示、去除加载层
-            loading.classList.remove("visible");
             return;
           }
-          loaded = true;
-          if (timeoutTimer) {
-            clearTimeout(timeoutTimer);
-            timeoutTimer = null;
-          }
-          loading.classList.remove("visible");
-          toast.classList.remove("visible");
+          var script = document.createElement("script");
+          script.src = src;
+          script.async = true;
+          script.setAttribute("data-chat-sdk", "1");
+          script.onload = onSuccess;
+          script.onerror = onError;
+          document.head.appendChild(script);
         }
 
-        frame.addEventListener("load", onFrameLoad);
-        window.addEventListener("DOMContentLoaded", setup);
-        if (document.readyState === "interactive" || document.readyState === "complete") {
-          setup();
+        function ensureTimer() {
+          if (timeoutTimer) return;
+          timeoutTimer = setTimeout(showTimeout, LOAD_TIMEOUT_MS);
+        }
+
+        function initChat() {
+          if (!window.CozeWebSDK || !window.CozeWebSDK.WebChatClient) {
+            showTimeout();
+            return;
+          }
+
+          var auth = CONFIG.token
+            ? {
+                type: "token",
+                token: CONFIG.token,
+                onRefreshToken: function () {
+                  return CONFIG.token;
+                }
+              }
+            : { type: "unauth" };
+
+          new window.CozeWebSDK.WebChatClient({
+            config: {
+              botId: botId,
+              isIframe: false
+            },
+            auth: auth,
+            ui: {
+              base: {
+                layout: "pc"
+              }
+            }
+          });
+
+          clearTimer();
+          clearLoading(true);
+        }
+
+        function init() {
+          if (!botId) {
+            showGuide();
+            return;
+          }
+
+          // 加载中：显示 spinner
+          guide.classList.remove("visible");
+          toast.classList.remove("visible");
+          loading.classList.add("visible");
+
+          ensureTimer(); // 8 秒兜底
+
+          loadScript(
+            SDK_URL,
+            initChat,
+            function () {
+              showTimeout();
+            }
+          );
+        }
+
+        window.addEventListener("DOMContentLoaded", init);
+        if (
+          document.readyState === "interactive" ||
+          document.readyState === "complete"
+        ) {
+          init();
         }
       })();
     </script>
