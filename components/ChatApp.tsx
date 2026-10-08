@@ -777,6 +777,15 @@ function AppHeader({
   );
 }
 
+/** 去掉智能体 Markdown 中的图片语法，避免界面展示参考图 */
+function stripAssistantImages(content: string): string {
+  return content
+    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
+    .replace(/!\[[^\]]*]\[[^\]]*]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
     return (
@@ -824,18 +833,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                     {children}
                   </a>
                 ),
-                img: ({ src, alt }) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={typeof src === "string" ? src : undefined}
-                    alt={alt || "参考图"}
-                    className="my-2 max-h-64 w-auto max-w-full rounded-lg border border-[var(--line)] object-contain"
-                    loading="lazy"
-                  />
-                ),
+                // 智能体返回的参考图不展示，只保留文字
+                img: () => null,
               }}
             >
-              {message.content}
+              {stripAssistantImages(message.content)}
             </ReactMarkdown>
           </div>
         )}
