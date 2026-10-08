@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+:root {
+  --primary-dark: #0b1e3a;
+  --primary-light: #12305c;
+  --accent: #17e6a1;
+  --text-main: #1c2b3a;
+  --text-sub: #6b7a8c;
+  --line: #e3e9f0;
+  --bg: #eef2f7;
+}
+
+html,
+body {
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    sans-serif;
+  background: var(--bg);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(23, 230, 161, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(23, 230, 161, 0.06);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.status-dot {
+  animation: pulse-dot 2.2s ease-in-out infinite;
+}
+
+.spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot,
+  .spinner {
+    animation: none;
+  }
+}

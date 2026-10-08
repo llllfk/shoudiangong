@@ -1,17 +1,21 @@
 [project]
-entrypoint = "index.html"
-requires = [ "python-3.12" ]
+entrypoint = "package.json"
+requires = [ "node-22" ]
 project_type = "web"
-template = "native-static"
-version = "0.1.8"
+template = "nextjs"
+version = "0.2.0"
 appliedPatches = [ ]
 
 [dev]
-build = [ ]
+build = [
+  "npm",
+  "run",
+  "build"
+]
 run = [
   "sh",
   "-c",
-  "exec python3 -m http.server ${DEPLOY_RUN_PORT} --bind 0.0.0.0"
+  "exec npm run start -- -H 0.0.0.0 -p ${DEPLOY_RUN_PORT:-3000}"
 ]
 run_win = [
   "powershell.exe",
@@ -23,11 +27,15 @@ run_win = [
 ]
 
 [deploy]
-build = [ ]
+build = [
+  "npm",
+  "run",
+  "build"
+]
 run = [
   "sh",
   "-c",
-  "exec python3 -m http.server ${DEPLOY_RUN_PORT} --bind 0.0.0.0"
+  "exec npm run start -- -H 0.0.0.0 -p ${DEPLOY_RUN_PORT:-3000}"
 ]
 run_win = [
   "powershell.exe",
