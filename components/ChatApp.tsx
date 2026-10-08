@@ -9,6 +9,7 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { compressImageFile } from "@/lib/compress-image";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
@@ -301,8 +302,9 @@ export function ChatApp() {
       let imageUrl: string | undefined;
 
       if (imageFile) {
+        const compressed = await compressImageFile(imageFile);
         const form = new FormData();
-        form.append("file", imageFile);
+        form.append("file", compressed);
         const uploadRes = await fetch("/api/upload", {
           method: "POST",
           body: form,
