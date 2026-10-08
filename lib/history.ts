@@ -31,11 +31,12 @@ export async function appendMessage(input: {
   imageUri?: string | null;
   imageUrl?: string | null;
   cozeFileId?: string | null;
+  cozeChatId?: string | null;
 }): Promise<void> {
   await query(
     `INSERT INTO messages
-      (conversation_id, role, content, image_uri, image_url, coze_file_id)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+      (conversation_id, role, content, image_uri, image_url, coze_file_id, coze_chat_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       input.conversationId,
       input.role,
@@ -43,12 +44,26 @@ export async function appendMessage(input: {
       input.imageUri || null,
       input.imageUrl || null,
       input.cozeFileId || null,
+      input.cozeChatId || null,
     ],
   );
   await query(
     `UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE conversation_id = $1`,
     [input.conversationId],
   );
+}
+
+export async function hasAssistantForChat(
+  conversationId: string,
+  chatId: string,
+): Promise<boolean> {
+  const result = await query<{ id: string }>(
+    `SELECT id::text FROM messages
+     WHERE conversation_id = $1 AND role = 'assistant' AND coze_chat_id = $2
+     LIMIT 1`,
+    [conversationId, chatId],
+  );
+  return result.rows.length > 0;
 }
 
 export async function getLatestConversationId(

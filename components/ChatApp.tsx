@@ -1,11 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+} from "react";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
   ChatMessage,
-  ChatResult,
+  ChatStartResult,
+  ChatStatusResult,
   ConversationItem,
   ConversationsResult,
   HistoryResult,
@@ -58,9 +65,12 @@ export function ChatApp() {
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const conversationIdRef = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -165,8 +175,73 @@ export function ChatApp() {
 
   const clearPendingImage = useCallback(() => {
     setPendingImage(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+    if (galleryInputRef.current) galleryInputRef.current.value = "";
   }, []);
+
+  const pickImageFile = useCallback((file: File | null | undefined) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setPendingImage(file);
+    setAttachMenuOpen(false);
+  }, []);
+
+  const openCamera = useCallback(() => {
+    setAttachMenuOpen(false);
+    if (cameraInputRef.current) {
+      cameraInputRef.current.value = "";
+      cameraInputRef.current.click();
+    }
+  }, []);
+
+  const openGallery = useCallback(() => {
+    setAttachMenuOpen(false);
+    if (galleryInputRef.current) {
+      galleryInputRef.current.value = "";
+      galleryInputRef.current.click();
+    }
+  }, []);
+
+  const handlePasteImage = useCallback(
+    (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      if (sending || loadingHistory) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          pickImageFile(item.getAsFile() || undefined);
+          return;
+        }
+      }
+      const files = e.clipboardData?.files;
+      if (files?.length) {
+        for (const file of Array.from(files)) {
+          if (file.type.startsWith("image/")) {
+            e.preventDefault();
+            pickImageFile(file);
+            return;
+          }
+        }
+      }
+    },
+    [loadingHistory, pickImageFile, sending],
+  );
+
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    const onPointerDown = (ev: MouseEvent | TouchEvent) => {
+      const el = attachMenuRef.current;
+      if (el && !el.contains(ev.target as Node)) {
+        setAttachMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [attachMenuOpen]);
 
   const handleNewSession = useCallback(() => {
     if (sending) return;
@@ -176,6 +251,7 @@ export function ChatApp() {
     setInput("");
     clearPendingImage();
     setErrorToast(null);
+    setAttachMenuOpen(false);
     setSidebarOpen(false);
   }, [clearPendingImage, sending]);
 
@@ -263,21 +339,57 @@ export function ChatApp() {
           conversationId: conversationIdRef.current || undefined,
         }),
       });
-      const chatJson = (await chatRes.json()) as ApiResponse<ChatResult>;
+      const chatJson = (await chatRes.json()) as ApiResponse<ChatStartResult>;
       if (!chatRes.ok || !("data" in chatJson)) {
         throw new Error(
-          "error" in chatJson ? chatJson.error : "对话失败，请重试本轮",
+          "error" in chatJson ? chatJson.error : "发起对话失败，请重试本轮",
         );
       }
 
-      conversationIdRef.current = chatJson.data.conversationId;
-      setActiveId(chatJson.data.conversationId);
+      const { conversationId, chatId } = chatJson.data;
+      conversationIdRef.current = conversationId;
+      setActiveId(conversationId);
+
+      // 短轮询取结果，避免一次请求挂太久被网关掐成 Failed to fetch
+      const maxPolls = 180;
+      let answer = "";
+      for (let i = 0; i < maxPolls; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const statusRes = await fetch(
+          `/api/chat/status?conversationId=${encodeURIComponent(conversationId)}&chatId=${encodeURIComponent(chatId)}`,
+        );
+        const statusJson =
+          (await statusRes.json()) as ApiResponse<ChatStatusResult>;
+        if (!statusRes.ok || !("data" in statusJson)) {
+          throw new Error(
+            "error" in statusJson
+              ? statusJson.error
+              : "查询对话状态失败，请重试本轮",
+          );
+        }
+        const { status, answer: nextAnswer, error } = statusJson.data;
+        if (status === "completed" && nextAnswer) {
+          answer = nextAnswer;
+          break;
+        }
+        if (
+          status === "failed" ||
+          status === "canceled" ||
+          status === "required_action"
+        ) {
+          throw new Error(error || `对话未正常完成: ${status}`);
+        }
+      }
+      if (!answer) {
+        throw new Error("对话超时，请稍后在对话记录中查看或重试本轮");
+      }
+
       setMessages((prev) => [
         ...prev,
         {
           id: createId("assistant"),
           role: "assistant",
-          content: chatJson.data.answer,
+          content: answer,
           createdAt: Date.now(),
         },
       ]);
@@ -285,6 +397,30 @@ export function ChatApp() {
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "对话失败，请重试本轮";
+      // 若仅是网络中断，尝试从历史把已生成的回复捞回来
+      const convId = conversationIdRef.current;
+      if (convId && /failed to fetch|network|timeout|超时/i.test(msg)) {
+        try {
+          await new Promise((r) => setTimeout(r, 1500));
+          const histRes = await fetch(
+            `/api/history?conversationId=${encodeURIComponent(convId)}`,
+          );
+          const histJson =
+            (await histRes.json()) as ApiResponse<HistoryResult>;
+          if (histRes.ok && "data" in histJson) {
+            const mapped = mapHistoryMessages(histJson.data.messages);
+            const last = mapped[mapped.length - 1];
+            if (last?.role === "assistant") {
+              setMessages(mapped);
+              void refreshConversations();
+              showError("网络波动，已从记录恢复本轮回复");
+              return;
+            }
+          }
+        } catch {
+          // fall through
+        }
+      }
       showError(msg);
       setMessages((prev) => [
         ...prev,
@@ -500,39 +636,67 @@ export function ChatApp() {
 
             <div className="flex items-end gap-2">
               <input
-                ref={fileInputRef}
+                ref={cameraInputRef}
                 type="file"
                 accept="image/*"
                 capture="environment"
                 className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) setPendingImage(f);
-                }}
+                onChange={(e) => pickImageFile(e.target.files?.[0])}
               />
-              <button
-                type="button"
-                aria-label="上传部件照片"
-                disabled={sending}
-                onClick={() => fileInputRef.current?.click()}
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--bg)] text-[var(--primary-light)] disabled:opacity-50"
-              >
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  aria-hidden="true"
+              <input
+                ref={galleryInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => pickImageFile(e.target.files?.[0])}
+              />
+
+              <div ref={attachMenuRef} className="relative shrink-0">
+                {attachMenuOpen && (
+                  <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[148px] overflow-hidden rounded-lg border border-[var(--line)] bg-white shadow-[0_8px_24px_rgba(11,30,58,0.12)]">
+                    <button
+                      type="button"
+                      onClick={openCamera}
+                      className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] text-[var(--text-main)] hover:bg-[var(--bg)]"
+                    >
+                      拍照
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openGallery}
+                      className="flex w-full items-center gap-2 border-t border-[var(--line)] px-3.5 py-2.5 text-left text-[13px] text-[var(--text-main)] hover:bg-[var(--bg)]"
+                    >
+                      选择照片
+                    </button>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  aria-label="添加部件照片"
+                  aria-expanded={attachMenuOpen}
+                  disabled={sending || loadingHistory}
+                  onClick={() => setAttachMenuOpen((v) => !v)}
+                  className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--bg)] text-[var(--primary-light)] disabled:opacity-50"
                 >
-                  <path d="M4 8h3l2-2h6l2 2h3v11H4V8z" />
-                  <circle cx="12" cy="13" r="3.5" />
-                </svg>
-              </button>
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    aria-hidden="true"
+                  >
+                    <path d="M4 8h3l2-2h6l2 2h3v11H4V8z" />
+                    <circle cx="12" cy="13" r="3.5" />
+                  </svg>
+                </button>
+              </div>
+
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePasteImage}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -540,7 +704,7 @@ export function ChatApp() {
                   }
                 }}
                 rows={1}
-                placeholder="输入检修说明，或附带部件照片…"
+                placeholder="输入说明，可粘贴图片或拍照上传…"
                 disabled={sending || loadingHistory}
                 className="max-h-28 min-h-11 flex-1 resize-none rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-sm text-[var(--text-main)] outline-none focus:border-[var(--primary-light)] disabled:opacity-60"
               />

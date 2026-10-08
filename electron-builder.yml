@@ -1,0 +1,19 @@
+appId: com.pantograph.inspection
+productName: 受电弓智能检修
+copyright: Copyright © pantograph
+directories:
+  output: C:/Users/Administrator/AppData/Local/Temp/pantograph-electron
+files:
+  - electron/**/*
+  - package.json
+extraMetadata:
+  main: electron/main.cjs
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: 受电弓智能检修

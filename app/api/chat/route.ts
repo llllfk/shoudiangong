@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { CozeApiError, getUserId, sendChat } from "@/lib/coze";
+import { CozeApiError, createChat, getUserId } from "@/lib/coze";
 import { isDatabaseConfigured } from "@/lib/db";
 import { appendMessage, ensureConversation } from "@/lib/history";
 import type { ChatRequestBody } from "@/types";
 
 /**
- * 对话入口：一轮用户输入 → 轮询至完成 → 返回 answer，并写入 PostgreSQL。
+ * 发起对话（短请求）：返回 conversationId + chatId。
+ * 结果由前端轮询 GET /api/chat/status，避免长连接被网关超时掐断。
  */
 export async function POST(request: NextRequest) {
   try {
@@ -29,9 +30,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const userContent = text?.trim() || (fileId || imageUrl ? "检测这个部件" : "");
+    const userContent =
+      text?.trim() || (fileId || imageUrl ? "检测这个部件" : "");
 
-    const result = await sendChat({
+    const started = await createChat({
       text,
       imageUrl,
       fileId,
@@ -40,27 +42,27 @@ export async function POST(request: NextRequest) {
 
     if (isDatabaseConfigured()) {
       try {
-        const userId = getUserId();
-        await ensureConversation(result.conversationId, userId);
+        await ensureConversation(started.conversationId, getUserId());
         await appendMessage({
-          conversationId: result.conversationId,
+          conversationId: started.conversationId,
           role: "user",
           content: userContent,
           imageUri: imageUri || null,
           imageUrl: imageUrl || null,
           cozeFileId: fileId || null,
-        });
-        await appendMessage({
-          conversationId: result.conversationId,
-          role: "assistant",
-          content: result.answer,
+          cozeChatId: started.chatId,
         });
       } catch (persistErr) {
-        console.error("[chat] persist failed:", persistErr);
+        console.error("[chat] persist user failed:", persistErr);
       }
     }
 
-    return NextResponse.json({ data: result });
+    return NextResponse.json({
+      data: {
+        conversationId: started.conversationId,
+        chatId: started.chatId,
+      },
+    });
   } catch (error) {
     if (error instanceof CozeApiError) {
       const status =
@@ -70,7 +72,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status });
     }
     const message =
-      error instanceof Error ? error.message : "对话调用失败，请重试本轮";
+      error instanceof Error ? error.message : "发起对话失败，请重试本轮";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

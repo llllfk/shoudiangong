@@ -69,8 +69,11 @@ export async function ensureSchema(): Promise<void> {
           image_uri TEXT,
           image_url TEXT,
           coze_file_id VARCHAR(128),
+          coze_chat_id VARCHAR(128),
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
+
+        ALTER TABLE messages ADD COLUMN IF NOT EXISTS coze_chat_id VARCHAR(128);
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
           ON messages (conversation_id, created_at);

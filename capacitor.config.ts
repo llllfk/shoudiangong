@@ -8,7 +8,9 @@ import type { CapacitorConfig } from "@capacitor/cli";
  * - 开发联调：http://192.168.1.10:3000 （手机与电脑同网段）
  * - 正式环境：https://your-app.coze.site
  */
-const serverUrl = process.env.CAPACITOR_SERVER_URL?.trim();
+const serverUrl =
+  process.env.CAPACITOR_SERVER_URL?.trim() ||
+  "https://556fwr627w.coze.site";
 
 const config: CapacitorConfig = {
   appId: "com.pantograph.inspection",

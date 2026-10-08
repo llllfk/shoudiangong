@@ -16,6 +16,20 @@ export interface ChatRequestBody {
   conversationId?: string;
 }
 
+export interface ChatStartResult {
+  conversationId: string;
+  chatId: string;
+}
+
+export interface ChatStatusResult {
+  status: string;
+  conversationId: string;
+  chatId: string;
+  answer?: string;
+  error?: string;
+}
+
+/** @deprecated 兼容旧命名；现由 start + status 替代 */
 export interface ChatResult {
   conversationId: string;
   answer: string;

@@ -4,8 +4,6 @@
  */
 
 const API_BASE = "https://api.coze.cn";
-const POLL_INTERVAL_MS = 1000;
-const POLL_TIMEOUT_SEC = 120;
 
 export class CozeApiError extends Error {
   constructor(
@@ -81,25 +79,13 @@ async function parseJson(res: Response): Promise<unknown> {
   }
 }
 
-export interface ChatRoundResult {
-  conversationId: string;
-  answer: string;
-}
-
-export async function sendChat(options: {
+function buildUserMessage(options: {
   text?: string;
   imageUrl?: string;
   fileId?: string;
-  conversationId?: string;
-}): Promise<ChatRoundResult> {
-  const { text, imageUrl, fileId, conversationId } = options;
+}): Record<string, string> {
+  const { text, imageUrl, fileId } = options;
   const hasImage = Boolean(imageUrl || fileId);
-
-  if (!text?.trim() && !hasImage) {
-    throw new CozeApiError("请提供文本或图片");
-  }
-
-  let message: Record<string, string>;
 
   if (hasImage) {
     const parts: Array<Record<string, string>> = [
@@ -110,17 +96,37 @@ export async function sendChat(options: {
     } else if (imageUrl) {
       parts.push({ type: "image", file_url: imageUrl });
     }
-    message = {
+    return {
       role: "user",
       content_type: "object_string",
       content: JSON.stringify(parts),
     };
-  } else {
-    message = {
-      role: "user",
-      content: text!.trim(),
-      content_type: "text",
-    };
+  }
+
+  return {
+    role: "user",
+    content: (text || "").trim(),
+    content_type: "text",
+  };
+}
+
+export interface ChatStartResult {
+  conversationId: string;
+  chatId: string;
+}
+
+/** 仅发起对话，立即返回 id，由前端短轮询取结果（避免长连接被网关掐断） */
+export async function createChat(options: {
+  text?: string;
+  imageUrl?: string;
+  fileId?: string;
+  conversationId?: string;
+}): Promise<ChatStartResult> {
+  const { text, imageUrl, fileId, conversationId } = options;
+  const hasImage = Boolean(imageUrl || fileId);
+
+  if (!text?.trim() && !hasImage) {
+    throw new CozeApiError("请提供文本或图片");
   }
 
   const body = {
@@ -128,7 +134,7 @@ export async function sendChat(options: {
     user_id: getUserId(),
     stream: false,
     auto_save_history: true,
-    additional_messages: [message],
+    additional_messages: [buildUserMessage(options)],
   };
 
   let url = `${API_BASE}/v3/chat`;
@@ -160,42 +166,43 @@ export async function sendChat(options: {
     throw new CozeApiError("发起对话成功但缺少 chat_id / conversation_id");
   }
 
-  let status = "created";
-  for (let i = 0; i < POLL_TIMEOUT_SEC; i++) {
-    await sleep(POLL_INTERVAL_MS);
-    const retrieveRes = await fetch(
-      `${API_BASE}/v3/chat/retrieve?conversation_id=${encodeURIComponent(convId)}&chat_id=${encodeURIComponent(chatId)}`,
-      { headers: authHeaders(false) },
-    );
-    const retrieveJson = await parseJson(retrieveRes);
-    if (!retrieveRes.ok) {
-      throw new CozeApiError(
-        `查询对话状态失败（HTTP ${retrieveRes.status}）`,
-        retrieveRes.status,
-      );
-    }
-    const detail = unwrapData<{ status?: string }>(retrieveJson);
-    status = detail.status || "unknown";
-    if (
-      status === "completed" ||
-      status === "failed" ||
-      status === "canceled" ||
-      status === "required_action"
-    ) {
-      break;
-    }
-  }
+  return { conversationId: convId, chatId };
+}
 
-  if (status !== "completed") {
+export type ChatStatusValue =
+  | "created"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "required_action"
+  | "unknown";
+
+export async function retrieveChatStatus(
+  conversationId: string,
+  chatId: string,
+): Promise<ChatStatusValue> {
+  const retrieveRes = await fetch(
+    `${API_BASE}/v3/chat/retrieve?conversation_id=${encodeURIComponent(conversationId)}&chat_id=${encodeURIComponent(chatId)}`,
+    { headers: authHeaders(false) },
+  );
+  const retrieveJson = await parseJson(retrieveRes);
+  if (!retrieveRes.ok) {
     throw new CozeApiError(
-      status === "created" || status === "in_progress"
-        ? "对话超时，请重试本轮"
-        : `对话未正常完成: ${status}`,
+      `查询对话状态失败（HTTP ${retrieveRes.status}）`,
+      retrieveRes.status,
     );
   }
+  const detail = unwrapData<{ status?: string }>(retrieveJson);
+  return (detail.status as ChatStatusValue) || "unknown";
+}
 
+export async function listChatAnswer(
+  conversationId: string,
+  chatId: string,
+): Promise<string> {
   const listRes = await fetch(
-    `${API_BASE}/v3/chat/message/list?conversation_id=${encodeURIComponent(convId)}&chat_id=${encodeURIComponent(chatId)}`,
+    `${API_BASE}/v3/chat/message/list?conversation_id=${encodeURIComponent(conversationId)}&chat_id=${encodeURIComponent(chatId)}`,
     { headers: authHeaders(false) },
   );
   const listJson = await parseJson(listRes);
@@ -228,8 +235,7 @@ export async function sendChat(options: {
   if (!answer) {
     throw new CozeApiError("对话已完成但未取得回复内容");
   }
-
-  return { conversationId: convId, answer };
+  return answer;
 }
 
 export async function uploadFile(file: Blob, filename: string): Promise<string> {
@@ -262,8 +268,4 @@ export async function uploadFile(file: Blob, filename: string): Promise<string> 
 
 export function isCozeConfigured(): boolean {
   return Boolean(process.env.COZE_PAT?.trim() && process.env.COZE_BOT_ID?.trim());
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
