@@ -7,6 +7,8 @@ import {
   useState,
   type ClipboardEvent,
 } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
@@ -801,9 +803,40 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             className="mb-2 max-h-48 w-auto rounded-lg object-cover"
           />
         )}
-        <pre className="m-0 whitespace-pre-wrap break-words font-sans">
-          {message.content}
-        </pre>
+        {isUser ? (
+          <pre className="m-0 whitespace-pre-wrap break-words font-sans">
+            {message.content}
+          </pre>
+        ) : (
+          <div className="chat-md break-words">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--primary-light)] underline underline-offset-2"
+                  >
+                    {children}
+                  </a>
+                ),
+                img: ({ src, alt }) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={typeof src === "string" ? src : undefined}
+                    alt={alt || "参考图"}
+                    className="my-2 max-h-64 w-auto max-w-full rounded-lg border border-[var(--line)] object-contain"
+                    loading="lazy"
+                  />
+                ),
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
     </div>
   );
