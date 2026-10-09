@@ -524,7 +524,7 @@ export function ChatApp() {
               系统准备中
             </p>
             <p className="m-0 text-[13px] leading-relaxed text-[var(--text-sub)]">
-              请在服务端环境变量中配置 COZE_BOT_ID 与 COZE_PAT 后刷新页面，即可开始智能检修辅助。
+              请在服务端环境变量中配置 BOT_ID 与 BOT_PAT 后刷新页面，即可开始智能检修辅助。
             </p>
           </div>
         </div>

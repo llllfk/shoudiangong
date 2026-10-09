@@ -3,6 +3,8 @@
  * PAT 仅通过环境变量注入，禁止写入前端。
  */
 
+import { env } from "@/lib/env";
+
 const API_BASE = "https://api.coze.cn";
 
 export class CozeApiError extends Error {
@@ -17,23 +19,23 @@ export class CozeApiError extends Error {
 }
 
 function getPat(): string {
-  const pat = process.env.COZE_PAT?.trim();
+  const pat = env("BOT_PAT", "COZE_PAT");
   if (!pat) {
-    throw new CozeApiError("未配置 COZE_PAT，请在环境变量中注入个人访问令牌");
+    throw new CozeApiError("未配置 BOT_PAT，请在环境变量中注入个人访问令牌");
   }
   return pat;
 }
 
 function getBotId(): string {
-  const botId = process.env.COZE_BOT_ID?.trim();
+  const botId = env("BOT_ID", "COZE_BOT_ID");
   if (!botId) {
-    throw new CozeApiError("未配置 COZE_BOT_ID，请在环境变量中注入智能体 ID");
+    throw new CozeApiError("未配置 BOT_ID，请在环境变量中注入智能体 ID");
   }
   return botId;
 }
 
 export function getUserId(): string {
-  return process.env.COZE_USER_ID?.trim() || "competition_user_01";
+  return env("BOT_USER_ID", "COZE_USER_ID") || "competition_user_01";
 }
 
 function authHeaders(json = true): HeadersInit {
@@ -287,5 +289,5 @@ export async function uploadFile(file: Blob, filename: string): Promise<string> 
 }
 
 export function isCozeConfigured(): boolean {
-  return Boolean(process.env.COZE_PAT?.trim() && process.env.COZE_BOT_ID?.trim());
+  return Boolean(env("BOT_PAT", "COZE_PAT") && env("BOT_ID", "COZE_BOT_ID"));
 }

@@ -13,11 +13,11 @@ Next.js 15 全栈应用：通过扣子 OpenAPI 与检修智能体对话，供工
 
 | 变量 | 说明 |
 |------|------|
-| `COZE_BOT_ID` | 智能体 ID（必填） |
-| `COZE_PAT` | 个人访问令牌，需 chat / getChat / listMessage / uploadFile（必填） |
-| `COZE_USER_ID` | 可选，默认 `competition_user_01` |
-| `DATABASE_URL` | PostgreSQL（对话落库；Coze 通常自动注入） |
-| `COZE_STORAGE_*` | 对象存储 URL/BUCKET/AK/SK（图片；Coze 通常自动注入） |
+| `BOT_ID` | 智能体 ID（必填；平台禁止 `COZE_` 前缀） |
+| `BOT_PAT` | 个人访问令牌，需 chat / getChat / listMessage / uploadFile（必填） |
+| `BOT_USER_ID` | 可选，默认 `competition_user_01` |
+| `DATABASE_URL` | PostgreSQL（对话落库；平台通常自动注入） |
+| `STORAGE_URL` / `STORAGE_BUCKET` / `STORAGE_AK` / `STORAGE_SK` | 对象存储（图片；平台通常自动注入） |
 
 智能体须已发布到 **API 渠道**。
 
@@ -58,7 +58,7 @@ npm run dev
 
 ## 部署
 
-`npm run build` → `npm run start`。在 Coze 编程 / 部署面板配置生产环境变量 `COZE_BOT_ID`、`COZE_PAT`。
+`npm run build` → `npm run start`。在部署面板配置生产环境变量 `BOT_ID`、`BOT_PAT`。
 
 ## Electron 桌面端（加载线上域名）
 

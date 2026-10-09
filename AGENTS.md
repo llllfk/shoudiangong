@@ -22,17 +22,18 @@
 ## 结构与行为
 - 顶部标题栏：深蓝渐变（`#0B1E3A → #12305C`），左侧绿色状态点 + 标题，右侧「AI 辅助外观检测」，高度 56px。
 - 左侧栏：「新建对话」+「对话记录」列表；桌面常显，移动端点菜单展开。
-- 未配置 `COZE_BOT_ID` / `COZE_PAT` 时显示居中引导卡片。
+- 未配置 `BOT_ID` / `BOT_PAT` 时显示居中引导卡片。
 - 一场检修共用 `conversation_id`；失败/超时提示重试本轮，不自动重发。
 - 智能体标记（【部件】【检查项】【结果】【描述】【检修建议】【台账】）原样透传。
 - 图片库内只存 `image_uri`（永久标识），展示时按需签临时 URL。
 
 ## 环境变量
-- `COZE_BOT_ID`（必填）
-- `COZE_PAT`（必填，严禁写入前端或提交仓库）
-- `COZE_USER_ID`（可选，默认 `competition_user_01`）
-- `DATABASE_URL`（对话持久化；Coze 平台通常自动注入）
-- `COZE_STORAGE_URL` / `COZE_STORAGE_BUCKET` / `COZE_STORAGE_AK` / `COZE_STORAGE_SK`（图片存储；平台通常自动注入）
+（平台禁止自定义变量以 `COZE_` 开头；代码仍兼容旧名）
+- `BOT_ID`（必填）
+- `BOT_PAT`（必填，严禁写入前端或提交仓库）
+- `BOT_USER_ID`（可选，默认 `competition_user_01`）
+- `DATABASE_URL`（对话持久化；平台通常自动注入）
+- `STORAGE_URL` / `STORAGE_BUCKET` / `STORAGE_AK` / `STORAGE_SK`（图片存储；平台通常自动注入）
 
 ## 移动端
 - viewport：`width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no`

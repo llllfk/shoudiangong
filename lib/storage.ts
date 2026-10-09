@@ -5,30 +5,41 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
+import { env } from "@/lib/env";
 
 let client: S3Client | null = null;
 
+function storageUrl(): string | undefined {
+  return env("STORAGE_URL", "COZE_STORAGE_URL");
+}
+function storageBucket(): string | undefined {
+  return env("STORAGE_BUCKET", "COZE_STORAGE_BUCKET");
+}
+function storageAk(): string | undefined {
+  return env("STORAGE_AK", "COZE_STORAGE_AK");
+}
+function storageSk(): string | undefined {
+  return env("STORAGE_SK", "COZE_STORAGE_SK");
+}
+
 export function isStorageConfigured(): boolean {
   return Boolean(
-    process.env.COZE_STORAGE_URL?.trim() &&
-      process.env.COZE_STORAGE_BUCKET?.trim() &&
-      process.env.COZE_STORAGE_AK?.trim() &&
-      process.env.COZE_STORAGE_SK?.trim(),
+    storageUrl() && storageBucket() && storageAk() && storageSk(),
   );
 }
 
 function getClient(): S3Client {
   if (!isStorageConfigured()) {
-    throw new Error("未配置 Coze 对象存储环境变量（COZE_STORAGE_*）");
+    throw new Error("未配置对象存储环境变量（STORAGE_URL/BUCKET/AK/SK）");
   }
   if (!client) {
     client = new S3Client({
-      endpoint: process.env.COZE_STORAGE_URL,
+      endpoint: storageUrl(),
       region: "us-east-1",
       forcePathStyle: true,
       credentials: {
-        accessKeyId: process.env.COZE_STORAGE_AK || "",
-        secretAccessKey: process.env.COZE_STORAGE_SK || "",
+        accessKeyId: storageAk() || "",
+        secretAccessKey: storageSk() || "",
       },
     });
   }
@@ -36,7 +47,7 @@ function getClient(): S3Client {
 }
 
 export function getBucket(): string {
-  return process.env.COZE_STORAGE_BUCKET || "";
+  return storageBucket() || "";
 }
 
 /** 永久标识：s3://bucket/key —— 入库存 URI，按需换临时 URL */
