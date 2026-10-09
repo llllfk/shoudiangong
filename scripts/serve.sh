@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 set -eu
 
 PORT="${DEPLOY_RUN_PORT:-${PORT:-3000}}"

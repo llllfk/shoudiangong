@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Coze 沙箱无需特殊配置；如需外链图片可在此配置 images.remotePatterns
+  // 云端构建不强制安装 eslint，避免缺包打断构建日志
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 };
 
 export default nextConfig;
