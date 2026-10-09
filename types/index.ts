@@ -4,15 +4,22 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  /** @deprecated 使用 imagePreviewUrls */
   imagePreviewUrl?: string;
+  imagePreviewUrls?: string[];
   createdAt: number;
 }
 
 export interface ChatRequestBody {
   text?: string;
+  /** 单图（兼容） */
   imageUrl?: string;
   fileId?: string;
   imageUri?: string;
+  /** 多图 */
+  imageUrls?: string[];
+  fileIds?: string[];
+  imageUris?: string[];
   conversationId?: string;
 }
 
@@ -48,6 +55,7 @@ export interface HistoryResult {
     role: ChatRole;
     content: string;
     imageUrl?: string | null;
+    imageUrls?: string[];
     createdAt: string;
   }>;
 }

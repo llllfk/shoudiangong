@@ -24,16 +24,27 @@ import type {
 
 type ConfigState = "loading" | "ready" | "missing";
 
+const MAX_PENDING_IMAGES = 9;
+
 function mapHistoryMessages(
   messages: HistoryResult["messages"],
 ): ChatMessage[] {
-  return messages.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    imagePreviewUrl: m.imageUrl || undefined,
-    createdAt: Date.parse(m.createdAt) || Date.now(),
-  }));
+  return messages.map((m) => {
+    const urls =
+      m.imageUrls && m.imageUrls.length > 0
+        ? m.imageUrls
+        : m.imageUrl
+          ? [m.imageUrl]
+          : [];
+    return {
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      imagePreviewUrl: urls[0],
+      imagePreviewUrls: urls.length > 0 ? urls : undefined,
+      createdAt: Date.parse(m.createdAt) || Date.now(),
+    };
+  });
 }
 
 function formatListTime(iso: string): string {
@@ -63,8 +74,8 @@ export function ChatApp() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [pendingImage, setPendingImage] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
@@ -155,14 +166,12 @@ export function ChatApp() {
   }, [refreshConversations]);
 
   useEffect(() => {
-    if (!pendingImage) {
-      setPreviewUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(pendingImage);
-    setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [pendingImage]);
+    const urls = pendingImages.map((f) => URL.createObjectURL(f));
+    setPreviewUrls(urls);
+    return () => {
+      for (const url of urls) URL.revokeObjectURL(url);
+    };
+  }, [pendingImages]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -176,16 +185,36 @@ export function ChatApp() {
     window.setTimeout(() => setErrorToast(null), 5000);
   }, []);
 
-  const clearPendingImage = useCallback(() => {
-    setPendingImage(null);
+  const clearPendingImages = useCallback(() => {
+    setPendingImages([]);
     if (cameraInputRef.current) cameraInputRef.current.value = "";
     if (galleryInputRef.current) galleryInputRef.current.value = "";
   }, []);
 
-  const pickImageFile = useCallback((file: File | null | undefined) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    setPendingImage(file);
-    setAttachMenuOpen(false);
+  const pickImageFiles = useCallback(
+    (files: FileList | File[] | null | undefined) => {
+      if (!files) return;
+      const list = Array.from(files).filter((f) =>
+        f.type.startsWith("image/"),
+      );
+      if (list.length === 0) return;
+      setPendingImages((prev) => {
+        const merged = [...prev, ...list];
+        if (merged.length > MAX_PENDING_IMAGES) {
+          showError(`一次最多上传 ${MAX_PENDING_IMAGES} 张照片`);
+          return merged.slice(0, MAX_PENDING_IMAGES);
+        }
+        return merged;
+      });
+      setAttachMenuOpen(false);
+    },
+    [showError],
+  );
+
+  const removePendingAt = useCallback((index: number) => {
+    setPendingImages((prev) => prev.filter((_, i) => i !== index));
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+    if (galleryInputRef.current) galleryInputRef.current.value = "";
   }, []);
 
   const openCamera = useCallback(() => {
@@ -207,27 +236,27 @@ export function ChatApp() {
   const handlePasteImage = useCallback(
     (e: ClipboardEvent<HTMLTextAreaElement>) => {
       if (sending || loadingHistory) return;
+      const fromItems: File[] = [];
       const items = e.clipboardData?.items;
-      if (!items) return;
-      for (const item of Array.from(items)) {
-        if (item.type.startsWith("image/")) {
-          e.preventDefault();
-          pickImageFile(item.getAsFile() || undefined);
-          return;
-        }
-      }
-      const files = e.clipboardData?.files;
-      if (files?.length) {
-        for (const file of Array.from(files)) {
-          if (file.type.startsWith("image/")) {
-            e.preventDefault();
-            pickImageFile(file);
-            return;
+      if (items) {
+        for (const item of Array.from(items)) {
+          if (item.type.startsWith("image/")) {
+            const file = item.getAsFile();
+            if (file) fromItems.push(file);
           }
         }
       }
+      const fromFiles = e.clipboardData?.files
+        ? Array.from(e.clipboardData.files).filter((f) =>
+            f.type.startsWith("image/"),
+          )
+        : [];
+      const images = fromItems.length > 0 ? fromItems : fromFiles;
+      if (images.length === 0) return;
+      e.preventDefault();
+      pickImageFiles(images);
     },
-    [loadingHistory, pickImageFile, sending],
+    [loadingHistory, pickImageFiles, sending],
   );
 
   useEffect(() => {
@@ -252,11 +281,11 @@ export function ChatApp() {
     setActiveId(null);
     setMessages([]);
     setInput("");
-    clearPendingImage();
+    clearPendingImages();
     setErrorToast(null);
     setAttachMenuOpen(false);
     setSidebarOpen(false);
-  }, [clearPendingImage, sending]);
+  }, [clearPendingImages, sending]);
 
   const handleSelectConversation = useCallback(
     async (conversationId: string) => {
@@ -267,41 +296,46 @@ export function ChatApp() {
       try {
         await loadConversation(conversationId);
         setInput("");
-        clearPendingImage();
+        clearPendingImages();
         setSidebarOpen(false);
       } catch (err) {
         showError(err instanceof Error ? err.message : "加载对话失败");
       }
     },
-    [activeId, clearPendingImage, loadConversation, sending, showError],
+    [activeId, clearPendingImages, loadConversation, sending, showError],
   );
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (sending || (!text && !pendingImage)) return;
+    if (sending || (!text && pendingImages.length === 0)) return;
 
     setSending(true);
     setErrorToast(null);
 
+    const imageFiles = [...pendingImages];
+    // 独立创建气泡预览 URL，避免清空待发送区时 revoke 导致图片空白
+    const localPreviews = imageFiles.map((f) => URL.createObjectURL(f));
+    const defaultText =
+      imageFiles.length > 1 ? "检测这些部件" : "检测这个部件";
     const userMsg: ChatMessage = {
       id: createId("user"),
       role: "user",
-      content: text || (pendingImage ? "检测这个部件" : ""),
-      imagePreviewUrl: previewUrl || undefined,
+      content: text || (imageFiles.length > 0 ? defaultText : ""),
+      imagePreviewUrl: localPreviews[0],
+      imagePreviewUrls:
+        localPreviews.length > 0 ? localPreviews : undefined,
       createdAt: Date.now(),
     };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
-
-    const imageFile = pendingImage;
-    clearPendingImage();
+    clearPendingImages();
 
     try {
-      let fileId: string | undefined;
-      let imageUri: string | undefined;
-      let imageUrl: string | undefined;
+      const fileIds: string[] = [];
+      const imageUris: string[] = [];
+      const imageUrls: string[] = [];
 
-      if (imageFile) {
+      for (const imageFile of imageFiles) {
         const compressed = await compressImageFile(imageFile);
         const form = new FormData();
         form.append("file", compressed);
@@ -318,18 +352,28 @@ export function ChatApp() {
               : "图片上传失败，请重试本轮",
           );
         }
-        fileId = uploadJson.data.fileId;
-        imageUri = uploadJson.data.imageUri;
-        imageUrl = uploadJson.data.imageUrl;
-        if (imageUrl) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === userMsg.id
-                ? { ...m, imagePreviewUrl: imageUrl }
-                : m,
-            ),
-          );
+        fileIds.push(uploadJson.data.fileId);
+        if (uploadJson.data.imageUri) {
+          imageUris.push(uploadJson.data.imageUri);
         }
+        if (uploadJson.data.imageUrl) {
+          imageUrls.push(uploadJson.data.imageUrl);
+        }
+      }
+
+      if (imageUrls.length > 0) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === userMsg.id
+              ? {
+                  ...m,
+                  imagePreviewUrl: imageUrls[0],
+                  imagePreviewUrls: imageUrls,
+                }
+              : m,
+          ),
+        );
+        for (const url of localPreviews) URL.revokeObjectURL(url);
       }
 
       const chatRes = await fetch("/api/chat", {
@@ -337,9 +381,9 @@ export function ChatApp() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: text || undefined,
-          fileId,
-          imageUri,
-          imageUrl,
+          fileIds: fileIds.length > 0 ? fileIds : undefined,
+          imageUris: imageUris.length > 0 ? imageUris : undefined,
+          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
           conversationId: conversationIdRef.current || undefined,
         }),
       });
@@ -439,10 +483,9 @@ export function ChatApp() {
       setSending(false);
     }
   }, [
-    clearPendingImage,
+    clearPendingImages,
     input,
-    pendingImage,
-    previewUrl,
+    pendingImages,
     refreshConversations,
     sending,
     showError,
@@ -619,21 +662,37 @@ export function ChatApp() {
           </div>
 
           <div className="border-t border-[var(--line)] bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4">
-            {previewUrl && (
-              <div className="mb-2 flex items-center gap-2">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={previewUrl}
-                  alt="待发送部件照片"
-                  className="h-14 w-14 rounded-lg border border-[var(--line)] object-cover"
-                />
+            {previewUrls.length > 0 && (
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                {previewUrls.map((url, index) => (
+                  <div key={`${url}-${index}`} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={url}
+                      alt={`待发送部件照片 ${index + 1}`}
+                      className="h-14 w-14 rounded-lg border border-[var(--line)] object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removePendingAt(index)}
+                      disabled={sending}
+                      aria-label={`移除第 ${index + 1} 张图片`}
+                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#12305c] text-[11px] leading-none text-white disabled:opacity-50"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <span className="text-[12px] text-[var(--text-sub)]">
+                  {previewUrls.length}/{MAX_PENDING_IMAGES}
+                </span>
                 <button
                   type="button"
-                  onClick={clearPendingImage}
+                  onClick={clearPendingImages}
                   className="text-[13px] text-[var(--text-sub)] underline"
                   disabled={sending}
                 >
-                  移除图片
+                  清空
                 </button>
               </div>
             )}
@@ -645,14 +704,21 @@ export function ChatApp() {
                 accept="image/*"
                 capture="environment"
                 className="hidden"
-                onChange={(e) => pickImageFile(e.target.files?.[0])}
+                onChange={(e) => {
+                  pickImageFiles(e.target.files);
+                  e.target.value = "";
+                }}
               />
               <input
                 ref={galleryInputRef}
                 type="file"
                 accept="image/*"
+                multiple
                 className="hidden"
-                onChange={(e) => pickImageFile(e.target.files?.[0])}
+                onChange={(e) => {
+                  pickImageFiles(e.target.files);
+                  e.target.value = "";
+                }}
               />
 
               <div ref={attachMenuRef} className="relative shrink-0">
@@ -670,7 +736,7 @@ export function ChatApp() {
                       onClick={openGallery}
                       className="flex w-full items-center gap-2 border-t border-[var(--line)] px-3.5 py-2.5 text-left text-[13px] text-[var(--text-main)] hover:bg-[var(--bg)]"
                     >
-                      选择照片
+                      选择照片（可多选）
                     </button>
                   </div>
                 )}
@@ -678,7 +744,11 @@ export function ChatApp() {
                   type="button"
                   aria-label="添加部件照片"
                   aria-expanded={attachMenuOpen}
-                  disabled={sending || loadingHistory}
+                  disabled={
+                    sending ||
+                    loadingHistory ||
+                    pendingImages.length >= MAX_PENDING_IMAGES
+                  }
                   onClick={() => setAttachMenuOpen((v) => !v)}
                   className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--bg)] text-[var(--primary-light)] disabled:opacity-50"
                 >
@@ -708,7 +778,7 @@ export function ChatApp() {
                   }
                 }}
                 rows={1}
-                placeholder="输入说明，可粘贴图片或拍照上传…"
+                placeholder="输入说明，可多选/粘贴图片或拍照上传…"
                 disabled={sending || loadingHistory}
                 className="max-h-28 min-h-11 flex-1 resize-none rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-sm text-[var(--text-main)] outline-none focus:border-[var(--primary-light)] disabled:opacity-60"
               />
@@ -718,7 +788,7 @@ export function ChatApp() {
                 disabled={
                   sending ||
                   loadingHistory ||
-                  (!input.trim() && !pendingImage)
+                  (!input.trim() && pendingImages.length === 0)
                 }
                 className="h-11 shrink-0 rounded-lg bg-[var(--primary-light)] px-4 text-sm font-medium text-white disabled:opacity-45"
               >
@@ -796,6 +866,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   }
 
   const isUser = message.role === "user";
+  const previewImages =
+    message.imagePreviewUrls && message.imagePreviewUrls.length > 0
+      ? message.imagePreviewUrls
+      : message.imagePreviewUrl
+        ? [message.imagePreviewUrl]
+        : [];
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -806,13 +882,18 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             : "border border-[var(--line)] bg-white text-[var(--text-main)] shadow-sm"
         }`}
       >
-        {message.imagePreviewUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={message.imagePreviewUrl}
-            alt="部件照片"
-            className="mb-2 max-h-48 w-auto rounded-lg object-cover"
-          />
+        {previewImages.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {previewImages.map((url, index) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={`${url}-${index}`}
+                src={url}
+                alt={`部件照片 ${index + 1}`}
+                className="max-h-48 w-auto max-w-[140px] rounded-lg object-cover"
+              />
+            ))}
+          </div>
         )}
         {isUser ? (
           <pre className="m-0 whitespace-pre-wrap break-words font-sans">

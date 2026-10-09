@@ -82,19 +82,33 @@ async function parseJson(res: Response): Promise<unknown> {
 function buildUserMessage(options: {
   text?: string;
   imageUrl?: string;
+  imageUrls?: string[];
   fileId?: string;
+  fileIds?: string[];
 }): Record<string, string> {
-  const { text, imageUrl, fileId } = options;
-  const hasImage = Boolean(imageUrl || fileId);
+  const { text, imageUrl, imageUrls, fileId, fileIds } = options;
+  const ids = [
+    ...(fileIds || []).filter(Boolean),
+    ...(fileId && !(fileIds || []).includes(fileId) ? [fileId] : []),
+  ];
+  const urls = [
+    ...(imageUrls || []).filter(Boolean),
+    ...(imageUrl && !(imageUrls || []).includes(imageUrl) ? [imageUrl] : []),
+  ];
+  const hasImage = ids.length > 0 || urls.length > 0;
 
   if (hasImage) {
     const parts: Array<Record<string, string>> = [
       { type: "text", text: text?.trim() || "检测这个部件" },
     ];
-    if (fileId) {
-      parts.push({ type: "image", file_id: fileId });
-    } else if (imageUrl) {
-      parts.push({ type: "image", file_url: imageUrl });
+    if (ids.length > 0) {
+      for (const id of ids) {
+        parts.push({ type: "image", file_id: id });
+      }
+    } else {
+      for (const url of urls) {
+        parts.push({ type: "image", file_url: url });
+      }
     }
     return {
       role: "user",
@@ -119,11 +133,17 @@ export interface ChatStartResult {
 export async function createChat(options: {
   text?: string;
   imageUrl?: string;
+  imageUrls?: string[];
   fileId?: string;
+  fileIds?: string[];
   conversationId?: string;
 }): Promise<ChatStartResult> {
-  const { text, imageUrl, fileId, conversationId } = options;
-  const hasImage = Boolean(imageUrl || fileId);
+  const { text, imageUrl, imageUrls, fileId, fileIds, conversationId } =
+    options;
+  const hasImage =
+    Boolean(imageUrl || fileId) ||
+    Boolean(fileIds?.length) ||
+    Boolean(imageUrls?.length);
 
   if (!text?.trim() && !hasImage) {
     throw new CozeApiError("请提供文本或图片");

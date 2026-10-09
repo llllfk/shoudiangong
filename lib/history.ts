@@ -7,8 +7,36 @@ export interface StoredMessage {
   content: string;
   imageUri?: string | null;
   imageUrl?: string | null;
+  imageUrls?: string[];
   cozeFileId?: string | null;
   createdAt: string;
+}
+
+/** 单值原样；多值 JSON 数组，兼容旧数据 */
+export function encodeMultiValue(values: string[]): string | null {
+  const list = values.map((v) => v.trim()).filter(Boolean);
+  if (list.length === 0) return null;
+  if (list.length === 1) return list[0];
+  return JSON.stringify(list);
+}
+
+export function decodeMultiValue(value: string | null | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((v): v is string => typeof v === "string")
+          .map((v) => v.trim())
+          .filter(Boolean);
+      }
+    } catch {
+      // 非 JSON 则按单值
+    }
+  }
+  return [value];
 }
 
 export async function ensureConversation(
@@ -151,20 +179,29 @@ export async function listMessages(
 
   const messages: StoredMessage[] = [];
   for (const row of result.rows) {
-    let imageUrl = row.image_url;
-    if (row.image_uri && isStorageConfigured()) {
-      try {
-        imageUrl = await getPresignedGetUrl(row.image_uri);
-      } catch {
-        // 保留库内旧 URL 兜底
+    const uris = decodeMultiValue(row.image_uri);
+    const fallbackUrls = decodeMultiValue(row.image_url);
+    const signedUrls: string[] = [];
+
+    if (uris.length > 0 && isStorageConfigured()) {
+      for (let i = 0; i < uris.length; i++) {
+        try {
+          signedUrls.push(await getPresignedGetUrl(uris[i]));
+        } catch {
+          if (fallbackUrls[i]) signedUrls.push(fallbackUrls[i]);
+        }
       }
+    } else {
+      signedUrls.push(...fallbackUrls);
     }
+
     messages.push({
       id: row.id,
       role: row.role as StoredMessage["role"],
       content: row.content,
       imageUri: row.image_uri,
-      imageUrl,
+      imageUrl: signedUrls[0] || null,
+      imageUrls: signedUrls.length > 0 ? signedUrls : undefined,
       cozeFileId: row.coze_file_id,
       createdAt: new Date(row.created_at).toISOString(),
     });

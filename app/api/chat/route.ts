@@ -1,8 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CozeApiError, createChat, getUserId } from "@/lib/coze";
 import { isDatabaseConfigured } from "@/lib/db";
-import { appendMessage, ensureConversation } from "@/lib/history";
+import {
+  appendMessage,
+  encodeMultiValue,
+  ensureConversation,
+} from "@/lib/history";
 import type { ChatRequestBody } from "@/types";
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
 
 /**
  * 发起对话（短请求）：返回 conversationId + chatId。
@@ -18,12 +30,28 @@ export async function POST(request: NextRequest) {
       typeof body.imageUri === "string" ? body.imageUri.trim() : undefined;
     const fileId =
       typeof body.fileId === "string" ? body.fileId.trim() : undefined;
+    const imageUrls = asStringList(body.imageUrls);
+    const imageUris = asStringList(body.imageUris);
+    const fileIds = asStringList(body.fileIds);
     const conversationId =
       typeof body.conversationId === "string"
         ? body.conversationId.trim()
         : undefined;
 
-    if (!text?.trim() && !imageUrl && !fileId) {
+    const allFileIds = [
+      ...fileIds,
+      ...(fileId && !fileIds.includes(fileId) ? [fileId] : []),
+    ];
+    const allImageUrls = [
+      ...imageUrls,
+      ...(imageUrl && !imageUrls.includes(imageUrl) ? [imageUrl] : []),
+    ];
+    const allImageUris = [
+      ...imageUris,
+      ...(imageUri && !imageUris.includes(imageUri) ? [imageUri] : []),
+    ];
+
+    if (!text?.trim() && allFileIds.length === 0 && allImageUrls.length === 0) {
       return NextResponse.json(
         { error: "请提供文本或图片" },
         { status: 400 },
@@ -31,12 +59,17 @@ export async function POST(request: NextRequest) {
     }
 
     const userContent =
-      text?.trim() || (fileId || imageUrl ? "检测这个部件" : "");
+      text?.trim() ||
+      (allFileIds.length > 0 || allImageUrls.length > 0
+        ? "检测这个部件"
+        : "");
 
     const started = await createChat({
       text,
-      imageUrl,
-      fileId,
+      imageUrl: allImageUrls[0],
+      imageUrls: allImageUrls,
+      fileId: allFileIds[0],
+      fileIds: allFileIds,
       conversationId,
     });
 
@@ -47,9 +80,9 @@ export async function POST(request: NextRequest) {
           conversationId: started.conversationId,
           role: "user",
           content: userContent,
-          imageUri: imageUri || null,
-          imageUrl: imageUrl || null,
-          cozeFileId: fileId || null,
+          imageUri: encodeMultiValue(allImageUris),
+          imageUrl: encodeMultiValue(allImageUrls),
+          cozeFileId: encodeMultiValue(allFileIds),
           cozeChatId: started.chatId,
         });
       } catch (persistErr) {

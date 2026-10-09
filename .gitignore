@@ -25,6 +25,7 @@ __pycache__/
 .cache
 coverage
 storybook-static
+*.tsbuildinfo
 release/
 dist-electron/
 dist_electron/
