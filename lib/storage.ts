@@ -1,8 +1,8 @@
 /**
- * 扣子编程对象存储（平台系统变量自动注入，无需写入 .env）：
+ * 扣子编程对象存储（平台系统变量自动注入，无需写入自定义 .env）：
  * - COZE_BUCKET_ENDPOINT_URL
  * - COZE_BUCKET_NAME
- * 鉴权走 workload identity → 请求头 x-storage-token（无需 AK/SK）。
+ * 鉴权：workload identity → 请求头 x-storage-token（无需 AK/SK）。
  */
 
 import {
@@ -10,87 +10,63 @@ import {
   S3Client,
   type PutObjectCommandInput,
 } from "@aws-sdk/client-s3";
-import { Client as WorkloadIdentityClient } from "@coze/workload-identity";
 import { randomUUID } from "crypto";
+import {
+  getCozeAccessToken,
+  isCozeIdentityConfigured,
+} from "@/lib/coze-identity";
 
 let client: S3Client | null = null;
-let identityClient: WorkloadIdentityClient | null = null;
-let cachedEndpoint: string | null = null;
-let cachedBucket: string | null = null;
+let clientEndpoint: string | null = null;
 
-function identity(): WorkloadIdentityClient {
-  if (!identityClient) {
-    identityClient = new WorkloadIdentityClient();
-  }
-  return identityClient;
+function bucketEndpoint(): string | undefined {
+  return process.env.COZE_BUCKET_ENDPOINT_URL?.trim();
+}
+
+function bucketName(): string | undefined {
+  return process.env.COZE_BUCKET_NAME?.trim();
 }
 
 /** 平台是否具备对象存储能力（系统变量占位，运行时由平台注入） */
 export function isStorageConfigured(): boolean {
   return Boolean(
-    process.env.COZE_BUCKET_ENDPOINT_URL?.trim() ||
-      process.env.COZE_BUCKET_NAME?.trim() ||
-      process.env.COZE_WORKLOAD_IDENTITY_CLIENT_ID?.trim(),
+    (bucketEndpoint() && bucketName()) || isCozeIdentityConfigured(),
   );
 }
 
-async function resolveEndpoint(): Promise<string> {
-  if (cachedEndpoint) return cachedEndpoint;
-  let endpoint = process.env.COZE_BUCKET_ENDPOINT_URL?.trim();
-  if (!endpoint) {
-    try {
-      const vars = await identity().getProjectEnvVars();
-      endpoint = vars.get("COZE_BUCKET_ENDPOINT_URL")?.trim();
-    } catch {
-      // 非扣子运行环境可能没有 workload identity
-    }
-  }
+function requireEndpoint(): string {
+  const endpoint = bucketEndpoint();
   if (!endpoint) {
     throw new Error("未配置存储端点：请确认平台已注入 COZE_BUCKET_ENDPOINT_URL");
   }
-  cachedEndpoint = endpoint.replace(/\/$/, "");
-  return cachedEndpoint;
+  return endpoint.replace(/\/$/, "");
 }
 
-async function resolveBucket(): Promise<string> {
-  if (cachedBucket) return cachedBucket;
-  let bucket = process.env.COZE_BUCKET_NAME?.trim();
-  if (!bucket) {
-    try {
-      const vars = await identity().getProjectEnvVars();
-      bucket = vars.get("COZE_BUCKET_NAME")?.trim();
-    } catch {
-      // ignore
-    }
-  }
+function requireBucket(): string {
+  const bucket = bucketName();
   if (!bucket) {
     throw new Error("未配置存储桶：请确认平台已注入 COZE_BUCKET_NAME");
   }
-  cachedBucket = bucket;
   return bucket;
 }
 
-async function getStorageToken(): Promise<string> {
-  return identity().getAccessToken();
-}
-
 function getClient(endpoint: string): S3Client {
-  if (client) return client;
+  if (client && clientEndpoint === endpoint) return client;
 
   client = new S3Client({
     endpoint,
     region: "cn-beijing",
     forcePathStyle: true,
-    // 扣子对象存储用 x-storage-token，AK/SK 占位即可
     credentials: {
       accessKeyId: "coze",
       secretAccessKey: "coze",
     },
   });
+  clientEndpoint = endpoint;
 
   client.middlewareStack.add(
     (next) => async (args) => {
-      const token = await getStorageToken();
+      const token = await getCozeAccessToken();
       const request = args.request as { headers?: Record<string, string> };
       if (request.headers) {
         request.headers["x-storage-token"] = token;
@@ -124,8 +100,8 @@ export async function uploadImageObject(
   body: Buffer | Uint8Array,
   options?: { contentType?: string; filename?: string },
 ): Promise<{ uri: string; key: string }> {
-  const endpoint = await resolveEndpoint();
-  const bucket = await resolveBucket();
+  const endpoint = requireEndpoint();
+  const bucket = requireBucket();
   const ext = guessExt(options?.filename, options?.contentType);
   const key = `pantograph/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${ext}`;
 
@@ -148,8 +124,8 @@ export async function getPresignedGetUrl(
   uriOrKey: string,
   expiresInSec = 7 * 24 * 3600,
 ): Promise<string> {
-  const endpoint = await resolveEndpoint();
-  const defaultBucket = await resolveBucket();
+  const endpoint = requireEndpoint();
+  const defaultBucket = requireBucket();
   let bucket = defaultBucket;
   let key = uriOrKey;
   const parsed = parseObjectUri(uriOrKey);
@@ -158,7 +134,7 @@ export async function getPresignedGetUrl(
     key = parsed.key;
   }
 
-  const token = await getStorageToken();
+  const token = await getCozeAccessToken();
   const res = await fetch(`${endpoint}/sign-url`, {
     method: "POST",
     headers: {
