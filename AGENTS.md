@@ -33,7 +33,7 @@
 - `BOT_PAT`（必填，严禁写入前端或提交仓库）
 - `BOT_USER_ID`（可选，默认 `competition_user_01`）
 - `DATABASE_URL`（对话持久化；平台通常自动注入）
-- `STORAGE_URL` / `STORAGE_BUCKET` / `STORAGE_AK` / `STORAGE_SK`（图片存储；平台通常自动注入）
+- 对象存储：代码直接读取平台系统变量 `COZE_BUCKET_ENDPOINT_URL` / `COZE_BUCKET_NAME`（自动注入，无需写入自定义 env）；鉴权用 workload identity
 
 ## 移动端
 - viewport：`width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no`

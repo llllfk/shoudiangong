@@ -17,7 +17,7 @@ Next.js 15 全栈应用：通过扣子 OpenAPI 与检修智能体对话，供工
 | `BOT_PAT` | 个人访问令牌，需 chat / getChat / listMessage / uploadFile（必填） |
 | `BOT_USER_ID` | 可选，默认 `competition_user_01` |
 | `DATABASE_URL` | PostgreSQL（对话落库；平台通常自动注入） |
-| `STORAGE_URL` / `STORAGE_BUCKET` / `STORAGE_AK` / `STORAGE_SK` | 对象存储（图片；平台通常自动注入） |
+| `COZE_BUCKET_ENDPOINT_URL` / `COZE_BUCKET_NAME` | 对象存储（平台系统变量，自动注入，无需手动配置） |
 
 智能体须已发布到 **API 渠道**。
 
