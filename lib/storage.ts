@@ -6,6 +6,7 @@
  */
 
 import {
+  GetObjectCommand,
   PutObjectCommand,
   S3Client,
   type PutObjectCommandInput,
@@ -100,20 +101,72 @@ export async function uploadImageObject(
   body: Buffer | Uint8Array,
   options?: { contentType?: string; filename?: string },
 ): Promise<{ uri: string; key: string }> {
+  const uploaded = await uploadObject(body, {
+    ...options,
+    folder: "images",
+  });
+  return { uri: uploaded.uri, key: uploaded.key };
+}
+
+/** 通用对象上传（图片 / 文档等） */
+export async function uploadObject(
+  body: Buffer | Uint8Array,
+  options?: {
+    contentType?: string;
+    filename?: string;
+    folder?: string;
+  },
+): Promise<{ uri: string; key: string; contentType: string }> {
   const endpoint = requireEndpoint();
   const bucket = requireBucket();
+  const folder = options?.folder || "files";
   const ext = guessExt(options?.filename, options?.contentType);
-  const key = `pantograph/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${ext}`;
+  const key = `pantograph/${folder}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${ext}`;
 
+  const contentType = options?.contentType || "application/octet-stream";
+  const safeName = (options?.filename || `file${ext}`).replace(
+    /[\\"\r\n]/g,
+    "_",
+  ).slice(0, 180);
   const input: PutObjectCommandInput = {
     Bucket: bucket,
     Key: key,
     Body: body,
-    ContentType: options?.contentType || "application/octet-stream",
+    ContentType: contentType,
+    ContentDisposition: `inline; filename="${safeName}"`,
   };
 
   await getClient(endpoint).send(new PutObjectCommand(input));
-  return { uri: toObjectUri(bucket, key), key };
+  return { uri: toObjectUri(bucket, key), key, contentType };
+}
+
+/** 从对象存储读取字节（供同源内嵌预览） */
+export async function getObjectBytes(
+  uriOrKey: string,
+): Promise<{ body: Buffer; contentType: string; filename?: string }> {
+  const endpoint = requireEndpoint();
+  const defaultBucket = requireBucket();
+  let bucket = defaultBucket;
+  let key = uriOrKey;
+  const parsed = parseObjectUri(uriOrKey);
+  if (parsed) {
+    bucket = parsed.bucket;
+    key = parsed.key;
+  }
+
+  const res = await getClient(endpoint).send(
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+  );
+  if (!res.Body) {
+    throw new Error("对象内容为空");
+  }
+  const body = Buffer.from(await res.Body.transformToByteArray());
+  const filename = key.split("/").pop();
+  return {
+    body,
+    contentType: res.ContentType || "application/octet-stream",
+    filename,
+  };
 }
 
 /**
@@ -185,5 +238,12 @@ function guessExt(filename?: string, contentType?: string): string {
   if (contentType === "image/png") return ".png";
   if (contentType === "image/webp") return ".webp";
   if (contentType === "image/gif") return ".gif";
-  return ".jpg";
+  if (contentType === "application/pdf") return ".pdf";
+  if (contentType?.includes("wordprocessingml")) return ".docx";
+  if (contentType?.includes("spreadsheetml")) return ".xlsx";
+  if (contentType?.includes("presentationml")) return ".pptx";
+  if (contentType === "text/plain") return ".txt";
+  if (contentType === "text/csv") return ".csv";
+  if (contentType?.startsWith("image/")) return ".jpg";
+  return "";
 }

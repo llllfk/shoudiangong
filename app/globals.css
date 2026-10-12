@@ -53,9 +53,24 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
+@keyframes send-hint-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.send-hint {
+  animation: send-hint-pulse 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .status-dot,
-  .spinner {
+  .spinner,
+  .send-hint {
     animation: none;
   }
 }

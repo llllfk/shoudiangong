@@ -9,7 +9,18 @@ import {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  DocumentViewer,
+  type DocViewerState,
+} from "@/components/DocumentViewer";
 import { compressImageFile } from "@/lib/compress-image";
+import {
+  extractDocumentUrls,
+  guessFilenameFromUrl,
+  isDocumentUrl,
+  looksLikeDocumentName,
+} from "@/lib/documents";
+import { downloadToLocal } from "@/lib/download";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
@@ -22,9 +33,25 @@ import type {
   UploadResult,
 } from "@/types";
 
+type IngestedDoc = {
+  uri: string;
+  viewPath: string;
+  contentType: string;
+  filename: string;
+};
+
 type ConfigState = "loading" | "ready" | "missing";
 
 const MAX_PENDING_IMAGES = 9;
+
+/** 等待智能体回复时轮换展示的提示文案 */
+const ANALYZING_HINTS = [
+  "正在识别部件外观特征…",
+  "对照检修标准比对中…",
+  "梳理检查项与判定结果…",
+  "整理检修建议与台账要点…",
+  "即将返回检测结论…",
+];
 
 function mapHistoryMessages(
   messages: HistoryResult["messages"],
@@ -77,14 +104,37 @@ export function ChatApp() {
   const [pendingImages, setPendingImages] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+  const [sendHint, setSendHint] = useState("检修助手处理中…");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [docCache, setDocCache] = useState<Record<string, IngestedDoc>>({});
+  const [docViewer, setDocViewer] = useState<DocViewerState | null>(null);
+  const [docBusyUrl, setDocBusyUrl] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const hintTimerRef = useRef<number | null>(null);
+  const ingestingRef = useRef<Set<string>>(new Set());
+
+  const stopHintRotation = useCallback(() => {
+    if (hintTimerRef.current != null) {
+      window.clearInterval(hintTimerRef.current);
+      hintTimerRef.current = null;
+    }
+  }, []);
+
+  const startHintRotation = useCallback(() => {
+    stopHintRotation();
+    let index = 0;
+    setSendHint(ANALYZING_HINTS[0]);
+    hintTimerRef.current = window.setInterval(() => {
+      index = (index + 1) % ANALYZING_HINTS.length;
+      setSendHint(ANALYZING_HINTS[index]);
+    }, 2800);
+  }, [stopHintRotation]);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -184,6 +234,96 @@ export function ChatApp() {
     setErrorToast(msg);
     window.setTimeout(() => setErrorToast(null), 5000);
   }, []);
+
+  const ingestDocument = useCallback(
+    async (url: string, preferredName?: string) => {
+      const cached = docCache[url];
+      if (cached) return cached;
+      if (ingestingRef.current.has(url)) return null;
+      ingestingRef.current.add(url);
+      try {
+        const filename =
+          (preferredName && looksLikeDocumentName(preferredName)
+            ? preferredName.trim()
+            : "") || guessFilenameFromUrl(url);
+        const res = await fetch("/api/documents/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, filename }),
+        });
+        const json = (await res.json()) as ApiResponse<IngestedDoc>;
+        if (!res.ok || !("data" in json)) {
+          throw new Error(
+            "error" in json ? json.error : "文档缓存到存储失败",
+          );
+        }
+        const doc = json.data;
+        setDocCache((prev) => ({ ...prev, [url]: doc }));
+        return doc;
+      } finally {
+        ingestingRef.current.delete(url);
+      }
+    },
+    [docCache],
+  );
+
+  const openDocument = useCallback(
+    async (url: string, title?: string) => {
+      setDocBusyUrl(url);
+      try {
+        const doc =
+          docCache[url] || (await ingestDocument(url, title));
+        if (!doc) {
+          throw new Error("文档处理中，请稍后再试");
+        }
+        setDocViewer({
+          title: title || doc.filename,
+          viewPath: doc.viewPath,
+          contentType: doc.contentType,
+          filename: doc.filename,
+        });
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "无法打开文档");
+      } finally {
+        setDocBusyUrl(null);
+      }
+    },
+    [docCache, ingestDocument, showError],
+  );
+
+  const downloadDocument = useCallback(
+    async (url: string, title?: string) => {
+      setDocBusyUrl(url);
+      try {
+        const doc =
+          docCache[url] || (await ingestDocument(url, title));
+        if (!doc) {
+          throw new Error("文档处理中，请稍后再试");
+        }
+        await downloadToLocal(doc.viewPath, doc.filename);
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "下载失败");
+      } finally {
+        setDocBusyUrl(null);
+      }
+    },
+    [docCache, ingestDocument, showError],
+  );
+
+  // 智能体回复里的文档链接：后台自动拉到 S3，点击时应用内打开
+  useEffect(() => {
+    const urls = new Set<string>();
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      for (const u of extractDocumentUrls(m.content)) urls.add(u);
+    }
+    for (const url of urls) {
+      if (docCache[url] || ingestingRef.current.has(url)) continue;
+      void ingestDocument(url).catch(() => {
+        // 预缓存失败不打扰用户，点击时再提示
+      });
+    }
+  }, [messages, docCache, ingestDocument]);
 
   const clearPendingImages = useCallback(() => {
     setPendingImages([]);
@@ -311,6 +451,9 @@ export function ChatApp() {
 
     setSending(true);
     setErrorToast(null);
+    setSendHint(
+      pendingImages.length > 0 ? "正在压缩并上传照片…" : "正在提交检测请求…",
+    );
 
     const imageFiles = [...pendingImages];
     // 独立创建气泡预览 URL，避免清空待发送区时 revoke 导致图片空白
@@ -335,7 +478,13 @@ export function ChatApp() {
       const imageUris: string[] = [];
       const imageUrls: string[] = [];
 
-      for (const imageFile of imageFiles) {
+      for (let i = 0; i < imageFiles.length; i++) {
+        const imageFile = imageFiles[i];
+        setSendHint(
+          imageFiles.length > 1
+            ? `正在上传照片 ${i + 1}/${imageFiles.length}…`
+            : "正在上传照片…",
+        );
         const compressed = await compressImageFile(imageFile);
         const form = new FormData();
         form.append("file", compressed);
@@ -376,6 +525,7 @@ export function ChatApp() {
         for (const url of localPreviews) URL.revokeObjectURL(url);
       }
 
+      setSendHint("正在提交检测请求…");
       const chatRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -397,6 +547,8 @@ export function ChatApp() {
       const { conversationId, chatId } = chatJson.data;
       conversationIdRef.current = conversationId;
       setActiveId(conversationId);
+
+      startHintRotation();
 
       // 短轮询取结果，避免一次请求挂太久被网关掐成 Failed to fetch
       const maxPolls = 180;
@@ -480,6 +632,7 @@ export function ChatApp() {
         },
       ]);
     } finally {
+      stopHintRotation();
       setSending(false);
     }
   }, [
@@ -489,7 +642,11 @@ export function ChatApp() {
     refreshConversations,
     sending,
     showError,
+    startHintRotation,
+    stopHintRotation,
   ]);
+
+  useEffect(() => () => stopHintRotation(), [stopHintRotation]);
 
   if (configState === "loading") {
     return (
@@ -647,16 +804,21 @@ export function ChatApp() {
 
             {!loadingHistory &&
               messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
+                <MessageBubble
+                  key={m.id}
+                  message={m}
+                  onOpenDocument={openDocument}
+                  onDownloadDocument={downloadDocument}
+                  busyDocUrl={docBusyUrl}
+                />
               ))}
 
             {sending && (
-              <div className="flex items-center gap-2 px-1 text-[13px] text-[var(--text-sub)]">
-                <div
-                  className="spinner h-4 w-4 rounded-full border-2 border-[rgba(18,48,92,0.15)] border-t-[#12305c]"
-                  aria-hidden="true"
-                />
-                <span>检修助手分析中…</span>
+              <div
+                className="send-hint px-1 text-[13px] text-[var(--primary-light)]"
+                aria-live="polite"
+              >
+                {sendHint}
               </div>
             )}
           </div>
@@ -798,6 +960,10 @@ export function ChatApp() {
           </div>
         </main>
       </div>
+
+      {docViewer && (
+        <DocumentViewer doc={docViewer} onClose={() => setDocViewer(null)} />
+      )}
     </div>
   );
 }
@@ -856,7 +1022,17 @@ function stripAssistantImages(content: string): string {
     .trim();
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  onOpenDocument,
+  onDownloadDocument,
+  busyDocUrl,
+}: {
+  message: ChatMessage;
+  onOpenDocument?: (url: string, title?: string) => void;
+  onDownloadDocument?: (url: string, title?: string) => void;
+  busyDocUrl?: string | null;
+}) {
   if (message.role === "system") {
     return (
       <div className="mx-auto max-w-xl rounded-lg border border-[#ffe2a8] bg-[#fff7e6] px-3 py-2 text-[13px] text-[#8a5a00]">
@@ -904,16 +1080,57 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[var(--primary-light)] underline underline-offset-2"
-                  >
-                    {children}
-                  </a>
-                ),
+                a: ({ href, children }) => {
+                  const url = typeof href === "string" ? href : "";
+                  const label =
+                    typeof children === "string"
+                      ? children
+                      : Array.isArray(children)
+                        ? children.map(String).join("")
+                        : "文档";
+                  const isDoc = Boolean(
+                    url &&
+                      (isDocumentUrl(url) || looksLikeDocumentName(label)),
+                  );
+                  const busy = Boolean(url && busyDocUrl === url);
+
+                  if (isDoc && (onOpenDocument || onDownloadDocument)) {
+                    return (
+                      <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        {onOpenDocument && (
+                          <button
+                            type="button"
+                            onClick={() => void onOpenDocument(url, label)}
+                            disabled={busy}
+                            className="cursor-pointer border-0 bg-transparent p-0 text-left font-inherit text-[var(--primary-light)] underline underline-offset-2 disabled:opacity-60"
+                          >
+                            {busy ? `处理中「${label}」…` : children}
+                          </button>
+                        )}
+                        {onDownloadDocument && (
+                          <button
+                            type="button"
+                            onClick={() => void onDownloadDocument(url, label)}
+                            disabled={busy}
+                            className="cursor-pointer rounded border border-[var(--line)] bg-[var(--bg)] px-1.5 py-0.5 text-[12px] text-[var(--primary-light)] disabled:opacity-60"
+                          >
+                            下载到本地
+                          </button>
+                        )}
+                      </span>
+                    );
+                  }
+
+                  // 非文档链接：同源页内打开，不另开系统浏览器标签
+                  return (
+                    <a
+                      href={url || undefined}
+                      className="text-[var(--primary-light)] underline underline-offset-2"
+                    >
+                      {children}
+                    </a>
+                  );
+                },
                 // 智能体返回的参考图不展示，只保留文字
                 img: () => null,
               }}
