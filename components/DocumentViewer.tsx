@@ -105,7 +105,7 @@ export function DocumentViewer({
     return () => {
       cancelled = true;
     };
-  }, [docUri, isDocx, pdfOrText]);
+  }, [docUri, isDocx, name, pdfOrText]);
 
   const showFallback = !pdfOrText && !isDocx;
 
