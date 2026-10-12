@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   canDocxPreview,
   canInlinePreview,
   displayDocName,
 } from "@/lib/documents";
 import { downloadToLocal } from "@/lib/download";
+import type { ApiResponse } from "@/types";
 
 export type DocViewerState = {
   title: string;
@@ -14,6 +15,17 @@ export type DocViewerState = {
   contentType: string;
   filename: string;
 };
+
+function uriFromViewPath(viewPath: string): string | null {
+  try {
+    const q = viewPath.includes("?")
+      ? viewPath.slice(viewPath.indexOf("?") + 1)
+      : "";
+    return new URLSearchParams(q).get("uri");
+  } catch {
+    return null;
+  }
+}
 
 export function DocumentViewer({
   doc,
@@ -25,6 +37,8 @@ export function DocumentViewer({
   const name = displayDocName(doc.title, doc.filename);
   const pdfOrText = canInlinePreview(doc.contentType, doc.filename);
   const isDocx = canDocxPreview(doc.contentType, name);
+  const docUri = useMemo(() => uriFromViewPath(doc.viewPath), [doc.viewPath]);
+
   const [html, setHtml] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(isDocx);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -46,9 +60,15 @@ export function DocumentViewer({
     }
   }, [doc.viewPath, name]);
 
-  // Word：拉取文件后转 HTML，应用内预览
+  // Word：走服务端预览接口，不在浏览器打包 mammoth
   useEffect(() => {
     if (!isDocx || pdfOrText) return;
+    if (!docUri) {
+      setLoadError("缺少文档标识，无法预览");
+      setPreviewing(false);
+      return;
+    }
+
     let cancelled = false;
     setPreviewing(true);
     setLoadError(null);
@@ -56,22 +76,23 @@ export function DocumentViewer({
 
     (async () => {
       try {
-        const res = await fetch(doc.viewPath);
-        if (!res.ok) {
-          throw new Error(`读取文档失败（HTTP ${res.status}）`);
+        const res = await fetch(
+          `/api/documents/preview?uri=${encodeURIComponent(docUri)}`,
+        );
+        const json = (await res.json()) as ApiResponse<{ html: string }>;
+        if (!res.ok || !("data" in json)) {
+          throw new Error(
+            "error" in json ? json.error : "Word 预览失败，请下载到本地查看",
+          );
         }
-        const buffer = await res.arrayBuffer();
-        const mammoth = await import("mammoth");
-        const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
         if (cancelled) return;
-        if (!result.value?.trim()) {
-          throw new Error("文档内容为空或无法解析");
-        }
-        setHtml(result.value);
+        setHtml(json.data.html);
       } catch (err) {
         if (!cancelled) {
           setLoadError(
-            err instanceof Error ? err.message : "Word 预览失败，请下载到本地查看",
+            err instanceof Error
+              ? err.message
+              : "Word 预览失败，请下载到本地查看",
           );
         }
       } finally {
@@ -82,7 +103,7 @@ export function DocumentViewer({
     return () => {
       cancelled = true;
     };
-  }, [doc.viewPath, isDocx, pdfOrText]);
+  }, [docUri, isDocx, pdfOrText]);
 
   const showFallback = !pdfOrText && !isDocx;
 
@@ -144,7 +165,6 @@ export function DocumentViewer({
             {html && (
               <div
                 className="doc-html mx-auto max-w-3xl px-5 py-6 text-[14px] leading-7 text-[var(--text-main)]"
-                // mammoth 输出受控转换结果，仅用于预览
                 dangerouslySetInnerHTML={{ __html: html }}
               />
             )}
