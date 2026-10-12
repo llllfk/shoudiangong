@@ -39,7 +39,7 @@ export function DocumentViewer({
   const isDocx = canDocxPreview(doc.contentType, name);
   const docUri = useMemo(() => uriFromViewPath(doc.viewPath), [doc.viewPath]);
 
-  const [html, setHtml] = useState<string | null>(null);
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(isDocx);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -60,7 +60,7 @@ export function DocumentViewer({
     }
   }, [doc.viewPath, name]);
 
-  // Word：走服务端预览接口，不在浏览器打包 mammoth
+  // Word：用临时签名链接 + Office 在线预览（不依赖 mammoth）
   useEffect(() => {
     if (!isDocx || pdfOrText) return;
     if (!docUri) {
@@ -72,27 +72,29 @@ export function DocumentViewer({
     let cancelled = false;
     setPreviewing(true);
     setLoadError(null);
-    setHtml(null);
+    setEmbedUrl(null);
 
     (async () => {
       try {
-        const res = await fetch(
-          `/api/documents/preview?uri=${encodeURIComponent(docUri)}`,
-        );
-        const json = (await res.json()) as ApiResponse<{ html: string }>;
+        const qs = new URLSearchParams({
+          uri: docUri,
+          filename: name,
+        });
+        const res = await fetch(`/api/documents/office-embed?${qs}`);
+        const json = (await res.json()) as ApiResponse<{ embedUrl: string }>;
         if (!res.ok || !("data" in json)) {
           throw new Error(
-            "error" in json ? json.error : "Word 预览失败，请下载到本地查看",
+            "error" in json ? json.error : "无法生成预览，请下载到本地查看",
           );
         }
         if (cancelled) return;
-        setHtml(json.data.html);
+        setEmbedUrl(json.data.embedUrl);
       } catch (err) {
         if (!cancelled) {
           setLoadError(
             err instanceof Error
               ? err.message
-              : "Word 预览失败，请下载到本地查看",
+              : "无法生成预览，请下载到本地查看",
           );
         }
       } finally {
@@ -143,10 +145,10 @@ export function DocumentViewer({
             className="h-full w-full border-0 bg-white"
           />
         ) : isDocx ? (
-          <div className="min-h-0 flex-1 overflow-auto bg-white">
+          <div className="flex min-h-0 flex-1 flex-col bg-white">
             {previewing && (
               <p className="px-6 py-8 text-[13px] text-[var(--primary-light)]">
-                正在生成预览…
+                正在加载预览…
               </p>
             )}
             {loadError && (
@@ -162,10 +164,12 @@ export function DocumentViewer({
                 </button>
               </div>
             )}
-            {html && (
-              <div
-                className="doc-html mx-auto max-w-3xl px-5 py-6 text-[14px] leading-7 text-[var(--text-main)]"
-                dangerouslySetInnerHTML={{ __html: html }}
+            {embedUrl && (
+              <iframe
+                title={name}
+                src={embedUrl}
+                className="h-full w-full flex-1 border-0 bg-white"
+                allow="fullscreen"
               />
             )}
           </div>
