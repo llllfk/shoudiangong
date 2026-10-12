@@ -75,6 +75,38 @@ body {
   }
 }
 
+/* Word 文档应用内预览（mammoth HTML） */
+.doc-html p {
+  margin: 0 0 0.75em;
+}
+
+.doc-html table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 13px;
+}
+
+.doc-html td,
+.doc-html th {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.doc-html img {
+  max-width: 100%;
+  height: auto;
+}
+
+.doc-html h1,
+.doc-html h2,
+.doc-html h3 {
+  margin: 1em 0 0.45em;
+  font-weight: 700;
+  color: var(--primary-dark);
+}
+
 /* 智能体回复 Markdown */
 .chat-md {
   font-size: 14px;

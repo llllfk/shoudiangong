@@ -44,7 +44,7 @@ type ConfigState = "loading" | "ready" | "missing";
 
 const MAX_PENDING_IMAGES = 9;
 
-/** 等待智能体回复时轮换展示的提示文案 */
+/** 等待回复时依次切换，播完最后一条后停住，不循环 */
 const ANALYZING_HINTS = [
   "正在识别部件外观特征…",
   "对照检修标准比对中…",
@@ -119,22 +119,35 @@ export function ChatApp() {
   const hintTimerRef = useRef<number | null>(null);
   const ingestingRef = useRef<Set<string>>(new Set());
 
-  const stopHintRotation = useCallback(() => {
+  const stopHintSequence = useCallback(() => {
     if (hintTimerRef.current != null) {
-      window.clearInterval(hintTimerRef.current);
+      window.clearTimeout(hintTimerRef.current);
       hintTimerRef.current = null;
     }
   }, []);
 
-  const startHintRotation = useCallback(() => {
-    stopHintRotation();
+  /** 按顺序切换文案，每条只出现一次，播完停在最后一条 */
+  const startHintSequence = useCallback(() => {
+    stopHintSequence();
     let index = 0;
     setSendHint(ANALYZING_HINTS[0]);
-    hintTimerRef.current = window.setInterval(() => {
-      index = (index + 1) % ANALYZING_HINTS.length;
+
+    const tick = () => {
+      index += 1;
+      if (index >= ANALYZING_HINTS.length) {
+        hintTimerRef.current = null;
+        return;
+      }
       setSendHint(ANALYZING_HINTS[index]);
-    }, 2800);
-  }, [stopHintRotation]);
+      if (index < ANALYZING_HINTS.length - 1) {
+        hintTimerRef.current = window.setTimeout(tick, 2800);
+      } else {
+        hintTimerRef.current = null;
+      }
+    };
+
+    hintTimerRef.current = window.setTimeout(tick, 2800);
+  }, [stopHintSequence]);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -276,11 +289,14 @@ export function ChatApp() {
         if (!doc) {
           throw new Error("文档处理中，请稍后再试");
         }
+        const niceName =
+          (title && looksLikeDocumentName(title) ? title.trim() : "") ||
+          doc.filename;
         setDocViewer({
-          title: title || doc.filename,
+          title: niceName,
           viewPath: doc.viewPath,
           contentType: doc.contentType,
-          filename: doc.filename,
+          filename: niceName,
         });
       } catch (err) {
         showError(err instanceof Error ? err.message : "无法打开文档");
@@ -548,7 +564,7 @@ export function ChatApp() {
       conversationIdRef.current = conversationId;
       setActiveId(conversationId);
 
-      startHintRotation();
+      startHintSequence();
 
       // 短轮询取结果，避免一次请求挂太久被网关掐成 Failed to fetch
       const maxPolls = 180;
@@ -632,7 +648,7 @@ export function ChatApp() {
         },
       ]);
     } finally {
-      stopHintRotation();
+      stopHintSequence();
       setSending(false);
     }
   }, [
@@ -642,11 +658,11 @@ export function ChatApp() {
     refreshConversations,
     sending,
     showError,
-    startHintRotation,
-    stopHintRotation,
+    startHintSequence,
+    stopHintSequence,
   ]);
 
-  useEffect(() => () => stopHintRotation(), [stopHintRotation]);
+  useEffect(() => () => stopHintSequence(), [stopHintSequence]);
 
   if (configState === "loading") {
     return (

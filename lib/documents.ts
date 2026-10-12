@@ -72,3 +72,19 @@ export function canInlinePreview(contentType: string, filename?: string): boolea
   if (filename && /\.(txt|csv)$/i.test(filename)) return true;
   return false;
 }
+
+/** Word（docx）可在应用内转 HTML 预览 */
+export function canDocxPreview(contentType: string, filename?: string): boolean {
+  const ct = contentType.toLowerCase();
+  if (ct.includes("wordprocessingml") || ct.includes("msword")) return true;
+  if (filename && /\.docx?$/i.test(filename)) return true;
+  return false;
+}
+
+export function displayDocName(title?: string, filename?: string): string {
+  const t = title?.trim();
+  if (t && !/^[0-9a-f-]{20,}\./i.test(t)) return t;
+  const f = filename?.trim();
+  if (f) return f;
+  return "文档";
+}
