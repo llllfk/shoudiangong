@@ -10,6 +10,19 @@ export interface ChatMessage {
   createdAt: number;
 }
 
+export interface ShortcutCommand {
+  id: string;
+  name: string;
+  command?: string;
+  description?: string;
+  queryTemplate?: string;
+  iconUrl?: string;
+}
+
+export interface ShortcutsResult {
+  shortcuts: ShortcutCommand[];
+}
+
 export interface ChatRequestBody {
   text?: string;
   /** 单图（兼容） */
@@ -21,6 +34,8 @@ export interface ChatRequestBody {
   fileIds?: string[];
   imageUris?: string[];
   conversationId?: string;
+  /** 点击智能体快捷指令时传入 */
+  shortcutCommandId?: string;
 }
 
 export interface ChatStartResult {

@@ -30,6 +30,8 @@ import type {
   ConversationItem,
   ConversationsResult,
   HistoryResult,
+  ShortcutCommand,
+  ShortcutsResult,
   UploadResult,
 } from "@/types";
 
@@ -111,6 +113,7 @@ export function ChatApp() {
   const [docCache, setDocCache] = useState<Record<string, IngestedDoc>>({});
   const [docViewer, setDocViewer] = useState<DocViewerState | null>(null);
   const [docBusyUrl, setDocBusyUrl] = useState<string | null>(null);
+  const [shortcuts, setShortcuts] = useState<ShortcutCommand[]>([]);
   const conversationIdRef = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -207,6 +210,18 @@ export function ChatApp() {
 
         setConfigState("ready");
         await refreshConversations();
+        if (cancelled) return;
+
+        try {
+          const scRes = await fetch("/api/shortcuts");
+          const scJson =
+            (await scRes.json()) as ApiResponse<ShortcutsResult>;
+          if (!cancelled && scRes.ok && "data" in scJson) {
+            setShortcuts(scJson.data.shortcuts || []);
+          }
+        } catch {
+          // 快捷指令失败不阻断主流程
+        }
         if (cancelled) return;
 
         const histRes = await fetch("/api/history");
@@ -461,14 +476,23 @@ export function ChatApp() {
     [activeId, clearPendingImages, loadConversation, sending, showError],
   );
 
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (shortcut?: ShortcutCommand) => {
     const text = input.trim();
-    if (sending || (!text && pendingImages.length === 0)) return;
+    if (
+      sending ||
+      (!text && pendingImages.length === 0 && !shortcut)
+    ) {
+      return;
+    }
 
     setSending(true);
     setErrorToast(null);
     setSendHint(
-      pendingImages.length > 0 ? "正在压缩并上传照片…" : "正在提交检测请求…",
+      shortcut
+        ? `正在执行「${shortcut.name}」…`
+        : pendingImages.length > 0
+          ? "正在压缩并上传照片…"
+          : "正在提交检测请求…",
     );
 
     const imageFiles = [...pendingImages];
@@ -476,10 +500,17 @@ export function ChatApp() {
     const localPreviews = imageFiles.map((f) => URL.createObjectURL(f));
     const defaultText =
       imageFiles.length > 1 ? "检测这些部件" : "检测这个部件";
+    const displayText =
+      text ||
+      (shortcut
+        ? shortcut.queryTemplate || shortcut.name
+        : imageFiles.length > 0
+          ? defaultText
+          : "");
     const userMsg: ChatMessage = {
       id: createId("user"),
       role: "user",
-      content: text || (imageFiles.length > 0 ? defaultText : ""),
+      content: displayText,
       imagePreviewUrl: localPreviews[0],
       imagePreviewUrls:
         localPreviews.length > 0 ? localPreviews : undefined,
@@ -541,16 +572,22 @@ export function ChatApp() {
         for (const url of localPreviews) URL.revokeObjectURL(url);
       }
 
-      setSendHint("正在提交检测请求…");
+      setSendHint(
+        shortcut
+          ? `正在执行「${shortcut.name}」…`
+          : "正在提交检测请求…",
+      );
       const chatRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // 纯点快捷指令时不传 text，由平台按指令模板生成用户输入
           text: text || undefined,
           fileIds: fileIds.length > 0 ? fileIds : undefined,
           imageUris: imageUris.length > 0 ? imageUris : undefined,
           imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
           conversationId: conversationIdRef.current || undefined,
+          shortcutCommandId: shortcut?.id,
         }),
       });
       const chatJson = (await chatRes.json()) as ApiResponse<ChatStartResult>;
@@ -840,6 +877,23 @@ export function ChatApp() {
           </div>
 
           <div className="border-t border-[var(--line)] bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4">
+            {shortcuts.length > 0 && (
+              <div className="mb-2 flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {shortcuts.map((sc) => (
+                  <button
+                    key={sc.id}
+                    type="button"
+                    title={sc.description || sc.queryTemplate || sc.name}
+                    disabled={sending || loadingHistory}
+                    onClick={() => void handleSend(sc)}
+                    className="shrink-0 rounded-full border border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-[12px] text-[var(--primary-light)] disabled:opacity-45"
+                  >
+                    {sc.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {previewUrls.length > 0 && (
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 {previewUrls.map((url, index) => (
@@ -956,7 +1010,11 @@ export function ChatApp() {
                   }
                 }}
                 rows={1}
-                placeholder="输入说明，可多选/粘贴图片或拍照上传…"
+                placeholder={
+                  shortcuts.length > 0
+                    ? "输入说明，或点上方快捷指令…"
+                    : "输入说明，可多选/粘贴图片或拍照上传…"
+                }
                 disabled={sending || loadingHistory}
                 className="max-h-28 min-h-11 flex-1 resize-none rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-sm text-[var(--text-main)] outline-none focus:border-[var(--primary-light)] disabled:opacity-60"
               />
@@ -1022,8 +1080,11 @@ function AppHeader({
           受电弓智能检修系统
         </h1>
       </div>
-      <span className="ml-3 shrink-0 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs tracking-wide text-white/85">
-        AI 辅助外观检测
+      <span
+        className="ml-3 max-w-[48%] truncate rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs tracking-wide text-white/85 sm:max-w-none"
+        title="AI 大模型外观检测与参数智能比对系统"
+      >
+        AI 大模型外观检测与参数智能比对系统
       </span>
     </header>
   );

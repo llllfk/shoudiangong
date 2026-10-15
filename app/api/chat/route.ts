@@ -37,6 +37,10 @@ export async function POST(request: NextRequest) {
       typeof body.conversationId === "string"
         ? body.conversationId.trim()
         : undefined;
+    const shortcutCommandId =
+      typeof body.shortcutCommandId === "string"
+        ? body.shortcutCommandId.trim()
+        : undefined;
 
     const allFileIds = [
       ...fileIds,
@@ -51,9 +55,14 @@ export async function POST(request: NextRequest) {
       ...(imageUri && !imageUris.includes(imageUri) ? [imageUri] : []),
     ];
 
-    if (!text?.trim() && allFileIds.length === 0 && allImageUrls.length === 0) {
+    if (
+      !text?.trim() &&
+      allFileIds.length === 0 &&
+      allImageUrls.length === 0 &&
+      !shortcutCommandId
+    ) {
       return NextResponse.json(
-        { error: "请提供文本或图片" },
+        { error: "请提供文本、图片或快捷指令" },
         { status: 400 },
       );
     }
@@ -62,7 +71,9 @@ export async function POST(request: NextRequest) {
       text?.trim() ||
       (allFileIds.length > 0 || allImageUrls.length > 0
         ? "检测这个部件"
-        : "");
+        : shortcutCommandId
+          ? "快捷指令"
+          : "");
 
     const started = await createChat({
       text,
@@ -71,6 +82,7 @@ export async function POST(request: NextRequest) {
       fileId: allFileIds[0],
       fileIds: allFileIds,
       conversationId,
+      shortcutCommandId,
     });
 
     if (isDatabaseConfigured()) {

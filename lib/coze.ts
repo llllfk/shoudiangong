@@ -131,6 +131,70 @@ export interface ChatStartResult {
   chatId: string;
 }
 
+export interface ShortcutCommandInfo {
+  id: string;
+  name: string;
+  command?: string;
+  description?: string;
+  queryTemplate?: string;
+  iconUrl?: string;
+}
+
+/** 查看已发布智能体配置中的快捷指令 */
+export async function listShortcutCommands(): Promise<ShortcutCommandInfo[]> {
+  const botId = getBotId();
+  const res = await fetch(`${API_BASE}/v1/bots/${encodeURIComponent(botId)}`, {
+    headers: authHeaders(false),
+  });
+  const json = await parseJson(res);
+  if (!res.ok) {
+    const err = json as { msg?: string; message?: string; code?: number };
+    throw new CozeApiError(
+      err.msg || err.message || `获取智能体配置失败（HTTP ${res.status}）`,
+      res.status,
+      err.code,
+    );
+  }
+
+  const data = unwrapData<{
+    shortcut_commands?: Array<Record<string, unknown>>;
+  }>(json);
+
+  const list = Array.isArray(data.shortcut_commands)
+    ? data.shortcut_commands
+    : [];
+
+  const parsed: ShortcutCommandInfo[] = [];
+  for (const item of list) {
+    const rawId = item.id ?? item.command_id;
+    const id =
+      typeof rawId === "string"
+        ? rawId.trim()
+        : typeof rawId === "number"
+          ? String(rawId)
+          : "";
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    if (!id || !name) continue;
+    parsed.push({
+      id,
+      name,
+      command:
+        typeof item.command === "string" ? item.command.trim() : undefined,
+      description:
+        typeof item.description === "string"
+          ? item.description.trim()
+          : undefined,
+      queryTemplate:
+        typeof item.query_template === "string"
+          ? item.query_template.trim()
+          : undefined,
+      iconUrl:
+        typeof item.icon_url === "string" ? item.icon_url.trim() : undefined,
+    });
+  }
+  return parsed;
+}
+
 /** 仅发起对话，立即返回 id，由前端短轮询取结果（避免长连接被网关掐断） */
 export async function createChat(options: {
   text?: string;
@@ -139,25 +203,45 @@ export async function createChat(options: {
   fileId?: string;
   fileIds?: string[];
   conversationId?: string;
+  shortcutCommandId?: string;
 }): Promise<ChatStartResult> {
-  const { text, imageUrl, imageUrls, fileId, fileIds, conversationId } =
-    options;
+  const {
+    text,
+    imageUrl,
+    imageUrls,
+    fileId,
+    fileIds,
+    conversationId,
+    shortcutCommandId,
+  } = options;
   const hasImage =
     Boolean(imageUrl || fileId) ||
     Boolean(fileIds?.length) ||
     Boolean(imageUrls?.length);
+  const hasShortcut = Boolean(shortcutCommandId?.trim());
 
-  if (!text?.trim() && !hasImage) {
-    throw new CozeApiError("请提供文本或图片");
+  if (!text?.trim() && !hasImage && !hasShortcut) {
+    throw new CozeApiError("请提供文本、图片或快捷指令");
   }
 
-  const body = {
+  const body: Record<string, unknown> = {
     bot_id: getBotId(),
     user_id: getUserId(),
     stream: false,
     auto_save_history: true,
-    additional_messages: [buildUserMessage(options)],
   };
+
+  if (hasShortcut) {
+    body.shortcut_command = { command_id: shortcutCommandId!.trim() };
+    // 快捷指令由平台生成用户输入；若同时有图/文则一并附上
+    if (text?.trim() || hasImage) {
+      body.additional_messages = [buildUserMessage(options)];
+    } else {
+      body.additional_messages = [];
+    }
+  } else {
+    body.additional_messages = [buildUserMessage(options)];
+  }
 
   let url = `${API_BASE}/v3/chat`;
   if (conversationId) {
