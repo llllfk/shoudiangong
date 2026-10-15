@@ -121,6 +121,11 @@ export function ChatApp() {
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const hintTimerRef = useRef<number | null>(null);
   const ingestingRef = useRef<Set<string>>(new Set());
+  const abortRef = useRef<AbortController | null>(null);
+  const activeChatRef = useRef<{
+    conversationId: string;
+    chatId: string;
+  } | null>(null);
 
   const stopHintSequence = useCallback(() => {
     if (hintTimerRef.current != null) {
@@ -476,6 +481,25 @@ export function ChatApp() {
     [activeId, clearPendingImages, loadConversation, sending, showError],
   );
 
+  const handleStop = useCallback(async () => {
+    abortRef.current?.abort();
+    const active = activeChatRef.current;
+    if (active) {
+      try {
+        await fetch("/api/chat/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId: active.conversationId,
+            chatId: active.chatId,
+          }),
+        });
+      } catch {
+        // 本地中止优先；取消接口失败不阻断
+      }
+    }
+  }, []);
+
   const handleSend = useCallback(async (shortcut?: ShortcutCommand) => {
     const text = input.trim();
     if (
@@ -484,6 +508,10 @@ export function ChatApp() {
     ) {
       return;
     }
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+    activeChatRef.current = null;
 
     setSending(true);
     setErrorToast(null);
@@ -520,12 +548,19 @@ export function ChatApp() {
     setInput("");
     clearPendingImages();
 
+    const throwIfAborted = () => {
+      if (ac.signal.aborted) {
+        throw new DOMException("已结束本轮", "AbortError");
+      }
+    };
+
     try {
       const fileIds: string[] = [];
       const imageUris: string[] = [];
       const imageUrls: string[] = [];
 
       for (let i = 0; i < imageFiles.length; i++) {
+        throwIfAborted();
         const imageFile = imageFiles[i];
         setSendHint(
           imageFiles.length > 1
@@ -533,11 +568,13 @@ export function ChatApp() {
             : "正在上传照片…",
         );
         const compressed = await compressImageFile(imageFile);
+        throwIfAborted();
         const form = new FormData();
         form.append("file", compressed);
         const uploadRes = await fetch("/api/upload", {
           method: "POST",
           body: form,
+          signal: ac.signal,
         });
         const uploadJson =
           (await uploadRes.json()) as ApiResponse<UploadResult>;
@@ -572,6 +609,7 @@ export function ChatApp() {
         for (const url of localPreviews) URL.revokeObjectURL(url);
       }
 
+      throwIfAborted();
       setSendHint(
         shortcut
           ? `正在执行「${shortcut.name}」…`
@@ -589,6 +627,7 @@ export function ChatApp() {
           conversationId: conversationIdRef.current || undefined,
           shortcutCommandId: shortcut?.id,
         }),
+        signal: ac.signal,
       });
       const chatJson = (await chatRes.json()) as ApiResponse<ChatStartResult>;
       if (!chatRes.ok || !("data" in chatJson)) {
@@ -600,6 +639,7 @@ export function ChatApp() {
       const { conversationId, chatId } = chatJson.data;
       conversationIdRef.current = conversationId;
       setActiveId(conversationId);
+      activeChatRef.current = { conversationId, chatId };
 
       startHintSequence();
 
@@ -607,9 +647,22 @@ export function ChatApp() {
       const maxPolls = 180;
       let answer = "";
       for (let i = 0; i < maxPolls; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
+        throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+          const t = window.setTimeout(() => {
+            ac.signal.removeEventListener("abort", onAbort);
+            resolve();
+          }, 1000);
+          const onAbort = () => {
+            window.clearTimeout(t);
+            reject(new DOMException("已结束本轮", "AbortError"));
+          };
+          ac.signal.addEventListener("abort", onAbort, { once: true });
+        });
+        throwIfAborted();
         const statusRes = await fetch(
           `/api/chat/status?conversationId=${encodeURIComponent(conversationId)}&chatId=${encodeURIComponent(chatId)}`,
+          { signal: ac.signal },
         );
         const statusJson =
           (await statusRes.json()) as ApiResponse<ChatStatusResult>;
@@ -625,15 +678,18 @@ export function ChatApp() {
           answer = nextAnswer;
           break;
         }
+        if (status === "canceled") {
+          throw new DOMException("已结束本轮", "AbortError");
+        }
         if (
           status === "failed" ||
-          status === "canceled" ||
           status === "required_action"
         ) {
           throw new Error(error || `对话未正常完成: ${status}`);
         }
       }
       if (!answer) {
+        throwIfAborted();
         throw new Error("对话超时，请稍后在对话记录中查看或重试本轮");
       }
 
@@ -648,6 +704,23 @@ export function ChatApp() {
       ]);
       void refreshConversations();
     } catch (err) {
+      const aborted =
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error &&
+          (/abort|已结束本轮/i.test(err.message) || err.name === "AbortError"));
+      if (aborted) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: createId("system"),
+            role: "system",
+            content: "已结束本轮",
+            createdAt: Date.now(),
+          },
+        ]);
+        return;
+      }
+
       const msg =
         err instanceof Error ? err.message : "对话失败，请重试本轮";
       // 若仅是网络中断，尝试从历史把已生成的回复捞回来
@@ -686,6 +759,8 @@ export function ChatApp() {
       ]);
     } finally {
       stopHintSequence();
+      abortRef.current = null;
+      activeChatRef.current = null;
       setSending(false);
     }
   }, [
@@ -1018,18 +1093,27 @@ export function ChatApp() {
                 disabled={sending || loadingHistory}
                 className="max-h-28 min-h-11 flex-1 resize-none rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-sm text-[var(--text-main)] outline-none focus:border-[var(--primary-light)] disabled:opacity-60"
               />
-              <button
-                type="button"
-                onClick={() => void handleSend()}
-                disabled={
-                  sending ||
-                  loadingHistory ||
-                  (!input.trim() && pendingImages.length === 0)
-                }
-                className="h-11 shrink-0 rounded-lg bg-[var(--primary-light)] px-4 text-sm font-medium text-white disabled:opacity-45"
-              >
-                发送
-              </button>
+              {sending ? (
+                <button
+                  type="button"
+                  onClick={() => void handleStop()}
+                  className="h-11 shrink-0 rounded-lg bg-[#b42318] px-4 text-sm font-medium text-white"
+                >
+                  结束
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleSend()}
+                  disabled={
+                    loadingHistory ||
+                    (!input.trim() && pendingImages.length === 0)
+                  }
+                  className="h-11 shrink-0 rounded-lg bg-[var(--primary-light)] px-4 text-sm font-medium text-white disabled:opacity-45"
+                >
+                  发送
+                </button>
+              )}
             </div>
           </div>
         </main>

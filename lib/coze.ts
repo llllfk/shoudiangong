@@ -275,6 +275,32 @@ export async function createChat(options: {
   return { conversationId: convId, chatId };
 }
 
+/** 取消进行中的对话（需 PAT 具备 cancelChat 权限） */
+export async function cancelChat(
+  conversationId: string,
+  chatId: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/v3/chat/cancel`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({
+      conversation_id: conversationId,
+      chat_id: chatId,
+    }),
+  });
+  const json = await parseJson(res);
+  if (!res.ok) {
+    const err = json as { msg?: string; message?: string; code?: number };
+    // 4104：当前状态不可取消（已完成等），对前端可视为已结束
+    if (err.code === 4104) return;
+    throw new CozeApiError(
+      err.msg || err.message || `取消对话失败（HTTP ${res.status}）`,
+      res.status,
+      err.code,
+    );
+  }
+}
+
 export type ChatStatusValue =
   | "created"
   | "in_progress"
