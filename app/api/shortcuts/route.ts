@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { CozeApiError, listShortcutCommands } from "@/lib/coze";
+import { CozeApiError, getPublishedBotConfig } from "@/lib/coze";
 
-/** 拉取智能体已配置的快捷指令（不回传密钥） */
+/** 拉取智能体已配置的快捷指令与开场白（不回传密钥） */
 export async function GET() {
   try {
-    const shortcuts = await listShortcutCommands();
+    const { shortcuts, prologue } = await getPublishedBotConfig();
     return NextResponse.json({
       data: {
         shortcuts: shortcuts.map((s) => ({
@@ -15,6 +15,7 @@ export async function GET() {
           queryTemplate: s.queryTemplate,
           iconUrl: s.iconUrl,
         })),
+        prologue,
       },
     });
   } catch (error) {
@@ -26,7 +27,7 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status });
     }
     const message =
-      error instanceof Error ? error.message : "获取快捷指令失败";
+      error instanceof Error ? error.message : "获取智能体配置失败";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

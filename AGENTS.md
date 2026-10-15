@@ -16,6 +16,7 @@
 - `app/api/conversations/route.ts`：对话记录列表
 - `app/api/history/route.ts`：拉取最近一场消息（刷新恢复）
 - `app/api/config/route.ts`：前端探测是否已配置（不回传密钥）
+- `app/api/shortcuts/route.ts`：快捷指令 + 开场白（自智能体已发布配置读取）
 - `lib/coze.ts` / `lib/db.ts` / `lib/storage.ts` / `lib/history.ts`
 - `components/ChatApp.tsx`：左侧栏 + 对话交互（发文本、发图、展示回复）
 

@@ -140,30 +140,26 @@ export interface ShortcutCommandInfo {
   iconUrl?: string;
 }
 
-/** 查看已发布智能体配置中的快捷指令 */
-export async function listShortcutCommands(): Promise<ShortcutCommandInfo[]> {
-  const botId = getBotId();
-  const res = await fetch(`${API_BASE}/v1/bots/${encodeURIComponent(botId)}`, {
-    headers: authHeaders(false),
-  });
-  const json = await parseJson(res);
-  if (!res.ok) {
-    const err = json as { msg?: string; message?: string; code?: number };
-    throw new CozeApiError(
-      err.msg || err.message || `获取智能体配置失败（HTTP ${res.status}）`,
-      res.status,
-      err.code,
-    );
-  }
+export interface PublishedBotConfig {
+  shortcuts: ShortcutCommandInfo[];
+  /** 智能体编排页配置的开场白 */
+  prologue: string;
+}
 
-  const data = unwrapData<{
-    shortcut_commands?: Array<Record<string, unknown>>;
-  }>(json);
+function parsePrologue(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "";
+  const info = raw as Record<string, unknown>;
+  const prologue =
+    typeof info.prologue === "string" ? info.prologue.trim() : "";
+  if (!prologue) return "";
+  // API 场景需自行替换开场白中的 {{user_name}}
+  return prologue.replaceAll("{{user_name}}", getUserId());
+}
 
-  const list = Array.isArray(data.shortcut_commands)
-    ? data.shortcut_commands
-    : [];
-
+function parseShortcutCommands(
+  list: Array<Record<string, unknown>> | undefined,
+): ShortcutCommandInfo[] {
+  if (!Array.isArray(list)) return [];
   const parsed: ShortcutCommandInfo[] = [];
   for (const item of list) {
     const rawId = item.id ?? item.command_id;
@@ -193,6 +189,57 @@ export async function listShortcutCommands(): Promise<ShortcutCommandInfo[]> {
     });
   }
   return parsed;
+}
+
+/** 从已发布配置补拉开场白（/v1/bots 未带时的兜底） */
+async function fetchOnlinePrologue(): Promise<string> {
+  const botId = getBotId();
+  const url = `${API_BASE}/v1/bot/get_online_info?bot_id=${encodeURIComponent(botId)}`;
+  const res = await fetch(url, { headers: authHeaders(false) });
+  const json = await parseJson(res);
+  if (!res.ok) return "";
+  try {
+    const data = unwrapData<{ onboarding_info?: unknown }>(json);
+    return parsePrologue(data.onboarding_info);
+  } catch {
+    return "";
+  }
+}
+
+/** 查看已发布智能体配置（快捷指令 + 开场白） */
+export async function getPublishedBotConfig(): Promise<PublishedBotConfig> {
+  const botId = getBotId();
+  const res = await fetch(`${API_BASE}/v1/bots/${encodeURIComponent(botId)}`, {
+    headers: authHeaders(false),
+  });
+  const json = await parseJson(res);
+  if (!res.ok) {
+    const err = json as { msg?: string; message?: string; code?: number };
+    throw new CozeApiError(
+      err.msg || err.message || `获取智能体配置失败（HTTP ${res.status}）`,
+      res.status,
+      err.code,
+    );
+  }
+
+  const data = unwrapData<{
+    shortcut_commands?: Array<Record<string, unknown>>;
+    onboarding_info?: unknown;
+  }>(json);
+
+  const shortcuts = parseShortcutCommands(data.shortcut_commands);
+  let prologue = parsePrologue(data.onboarding_info);
+  if (!prologue) {
+    prologue = await fetchOnlinePrologue();
+  }
+
+  return { shortcuts, prologue };
+}
+
+/** 查看已发布智能体配置中的快捷指令 */
+export async function listShortcutCommands(): Promise<ShortcutCommandInfo[]> {
+  const { shortcuts } = await getPublishedBotConfig();
+  return shortcuts;
 }
 
 /** 仅发起对话，立即返回 id，由前端短轮询取结果（避免长连接被网关掐断） */

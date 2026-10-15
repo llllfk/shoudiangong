@@ -21,6 +21,8 @@ export interface ShortcutCommand {
 
 export interface ShortcutsResult {
   shortcuts: ShortcutCommand[];
+  /** 智能体编排页配置的开场白 */
+  prologue?: string;
 }
 
 export interface ChatRequestBody {

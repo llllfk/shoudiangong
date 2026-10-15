@@ -55,6 +55,17 @@ const ANALYZING_HINTS = [
   "即将返回检测结论…",
 ];
 
+function createOpeningMessage(prologue: string): ChatMessage | null {
+  const content = prologue.trim();
+  if (!content) return null;
+  return {
+    id: createId("opening"),
+    role: "assistant",
+    content,
+    createdAt: Date.now(),
+  };
+}
+
 function mapHistoryMessages(
   messages: HistoryResult["messages"],
 ): ChatMessage[] {
@@ -114,11 +125,13 @@ export function ChatApp() {
   const [docViewer, setDocViewer] = useState<DocViewerState | null>(null);
   const [docBusyUrl, setDocBusyUrl] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState<ShortcutCommand[]>([]);
+  const [prologue, setPrologue] = useState("");
   const conversationIdRef = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
   const hintTimerRef = useRef<number | null>(null);
   const ingestingRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
@@ -174,7 +187,8 @@ export function ChatApp() {
       if (!conversationId) {
         conversationIdRef.current = null;
         setActiveId(null);
-        setMessages([]);
+        const opening = createOpeningMessage(prologue);
+        setMessages(opening ? [opening] : []);
         return;
       }
       setLoadingHistory(true);
@@ -196,7 +210,7 @@ export function ChatApp() {
         setLoadingHistory(false);
       }
     },
-    [],
+    [prologue],
   );
 
   useEffect(() => {
@@ -217,15 +231,18 @@ export function ChatApp() {
         await refreshConversations();
         if (cancelled) return;
 
+        let openingText = "";
         try {
           const scRes = await fetch("/api/shortcuts");
           const scJson =
             (await scRes.json()) as ApiResponse<ShortcutsResult>;
           if (!cancelled && scRes.ok && "data" in scJson) {
             setShortcuts(scJson.data.shortcuts || []);
+            openingText = (scJson.data.prologue || "").trim();
+            setPrologue(openingText);
           }
         } catch {
-          // 快捷指令失败不阻断主流程
+          // 快捷指令/开场白失败不阻断主流程
         }
         if (cancelled) return;
 
@@ -238,6 +255,9 @@ export function ChatApp() {
           conversationIdRef.current = histJson.data.conversationId;
           setActiveId(histJson.data.conversationId);
           setMessages(mapHistoryMessages(histJson.data.messages));
+        } else {
+          const opening = createOpeningMessage(openingText);
+          setMessages(opening ? [opening] : []);
         }
       } catch {
         if (!cancelled) setConfigState("missing");
@@ -369,11 +389,12 @@ export function ChatApp() {
 
   const pickImageFiles = useCallback(
     (files: FileList | File[] | null | undefined) => {
-      if (!files) return;
+      if (!files || sending || loadingHistory) return;
       const list = Array.from(files).filter((f) =>
         f.type.startsWith("image/"),
       );
       if (list.length === 0) return;
+      // 仅加入输入区待发送，不自动发消息
       setPendingImages((prev) => {
         const merged = [...prev, ...list];
         if (merged.length > MAX_PENDING_IMAGES) {
@@ -383,8 +404,27 @@ export function ChatApp() {
         return merged;
       });
       setAttachMenuOpen(false);
+      window.setTimeout(() => textInputRef.current?.focus(), 0);
     },
-    [showError],
+    [loadingHistory, sending, showError],
+  );
+
+  /** 快捷指令写入输入框，不自动发送 */
+  const applyShortcut = useCallback(
+    (sc: ShortcutCommand) => {
+      if (sending || loadingHistory) return;
+      const text = (sc.queryTemplate || sc.command || sc.name).trim();
+      if (!text) return;
+      setInput(text);
+      window.setTimeout(() => {
+        const el = textInputRef.current;
+        if (!el) return;
+        el.focus();
+        const len = text.length;
+        el.setSelectionRange(len, len);
+      }, 0);
+    },
+    [loadingHistory, sending],
   );
 
   const removePendingAt = useCallback((index: number) => {
@@ -455,13 +495,14 @@ export function ChatApp() {
     if (sending) return;
     conversationIdRef.current = null;
     setActiveId(null);
-    setMessages([]);
+    const opening = createOpeningMessage(prologue);
+    setMessages(opening ? [opening] : []);
     setInput("");
     clearPendingImages();
     setErrorToast(null);
     setAttachMenuOpen(false);
     setSidebarOpen(false);
-  }, [clearPendingImages, sending]);
+  }, [clearPendingImages, prologue, sending]);
 
   const handleSelectConversation = useCallback(
     async (conversationId: string) => {
@@ -500,12 +541,9 @@ export function ChatApp() {
     }
   }, []);
 
-  const handleSend = useCallback(async (shortcut?: ShortcutCommand) => {
+  const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (
-      sending ||
-      (!text && pendingImages.length === 0 && !shortcut)
-    ) {
+    if (sending || (!text && pendingImages.length === 0)) {
       return;
     }
 
@@ -516,11 +554,9 @@ export function ChatApp() {
     setSending(true);
     setErrorToast(null);
     setSendHint(
-      shortcut
-        ? `正在执行「${shortcut.name}」…`
-        : pendingImages.length > 0
-          ? "正在压缩并上传照片…"
-          : "正在提交检测请求…",
+      pendingImages.length > 0
+        ? "正在压缩并上传照片…"
+        : "正在提交检测请求…",
     );
 
     const imageFiles = [...pendingImages];
@@ -529,12 +565,7 @@ export function ChatApp() {
     const defaultText =
       imageFiles.length > 1 ? "检测这些部件" : "检测这个部件";
     const displayText =
-      text ||
-      (shortcut
-        ? shortcut.queryTemplate || shortcut.name
-        : imageFiles.length > 0
-          ? defaultText
-          : "");
+      text || (imageFiles.length > 0 ? defaultText : "");
     const userMsg: ChatMessage = {
       id: createId("user"),
       role: "user",
@@ -610,22 +641,16 @@ export function ChatApp() {
       }
 
       throwIfAborted();
-      setSendHint(
-        shortcut
-          ? `正在执行「${shortcut.name}」…`
-          : "正在提交检测请求…",
-      );
+      setSendHint("正在提交检测请求…");
       const chatRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // 纯点快捷指令时不传 text，由平台按指令模板生成用户输入
           text: text || undefined,
           fileIds: fileIds.length > 0 ? fileIds : undefined,
           imageUris: imageUris.length > 0 ? imageUris : undefined,
           imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
           conversationId: conversationIdRef.current || undefined,
-          shortcutCommandId: shortcut?.id,
         }),
         signal: ac.signal,
       });
@@ -919,17 +944,6 @@ export function ChatApp() {
               </div>
             )}
 
-            {!loadingHistory && messages.length === 0 && (
-              <div className="mx-auto mt-10 max-w-md rounded-xl border border-[var(--line)] bg-white px-5 py-6 text-center shadow-sm">
-                <p className="mb-1 text-sm font-semibold text-[var(--text-main)]">
-                  开始本场检修
-                </p>
-                <p className="text-[13px] leading-relaxed text-[var(--text-sub)]">
-                  发送文字说明或部件照片。左侧可新建对话或切换历史记录；同一场检修保持上下文。
-                </p>
-              </div>
-            )}
-
             {!loadingHistory &&
               messages.map((m) => (
                 <MessageBubble
@@ -953,54 +967,19 @@ export function ChatApp() {
 
           <div className="border-t border-[var(--line)] bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4">
             {shortcuts.length > 0 && (
-              <div className="mb-2 flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="mb-2 flex flex-wrap gap-2">
                 {shortcuts.map((sc) => (
                   <button
                     key={sc.id}
                     type="button"
                     title={sc.description || sc.queryTemplate || sc.name}
                     disabled={sending || loadingHistory}
-                    onClick={() => void handleSend(sc)}
+                    onClick={() => applyShortcut(sc)}
                     className="shrink-0 rounded-full border border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-[12px] text-[var(--primary-light)] disabled:opacity-45"
                   >
                     {sc.name}
                   </button>
                 ))}
-              </div>
-            )}
-
-            {previewUrls.length > 0 && (
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                {previewUrls.map((url, index) => (
-                  <div key={`${url}-${index}`} className="relative">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={url}
-                      alt={`待发送部件照片 ${index + 1}`}
-                      className="h-14 w-14 rounded-lg border border-[var(--line)] object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removePendingAt(index)}
-                      disabled={sending}
-                      aria-label={`移除第 ${index + 1} 张图片`}
-                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#12305c] text-[11px] leading-none text-white disabled:opacity-50"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                <span className="text-[12px] text-[var(--text-sub)]">
-                  {previewUrls.length}/{MAX_PENDING_IMAGES}
-                </span>
-                <button
-                  type="button"
-                  onClick={clearPendingImages}
-                  className="text-[13px] text-[var(--text-sub)] underline"
-                  disabled={sending}
-                >
-                  清空
-                </button>
               </div>
             )}
 
@@ -1049,7 +1028,7 @@ export function ChatApp() {
                 )}
                 <button
                   type="button"
-                  aria-label="添加部件照片"
+                  aria-label="添加部件照片到输入框"
                   aria-expanded={attachMenuOpen}
                   disabled={
                     sending ||
@@ -1074,25 +1053,65 @@ export function ChatApp() {
                 </button>
               </div>
 
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onPaste={handlePasteImage}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void handleSend();
+              <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-[var(--line)] bg-[var(--bg)] focus-within:border-[var(--primary-light)]">
+                {previewUrls.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-2.5 py-2">
+                    {previewUrls.map((url, index) => (
+                      <div key={`${url}-${index}`} className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={url}
+                          alt={`待发送部件照片 ${index + 1}`}
+                          className="h-14 w-14 rounded-lg border border-[var(--line)] object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removePendingAt(index)}
+                          disabled={sending}
+                          aria-label={`移除第 ${index + 1} 张图片`}
+                          className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#12305c] text-[11px] leading-none text-white disabled:opacity-50"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    <span className="text-[12px] text-[var(--text-sub)]">
+                      {previewUrls.length}/{MAX_PENDING_IMAGES}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={clearPendingImages}
+                      className="text-[13px] text-[var(--text-sub)] underline"
+                      disabled={sending}
+                    >
+                      清空
+                    </button>
+                  </div>
+                )}
+                <textarea
+                  ref={textInputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onPaste={handlePasteImage}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSend();
+                    }
+                  }}
+                  rows={1}
+                  placeholder={
+                    previewUrls.length > 0
+                      ? "可补充文字说明，再点发送…"
+                      : shortcuts.length > 0
+                        ? "输入说明，或点上方快捷指令填入后发送…"
+                        : "输入说明，可多选/粘贴图片或拍照上传…"
                   }
-                }}
-                rows={1}
-                placeholder={
-                  shortcuts.length > 0
-                    ? "输入说明，或点上方快捷指令…"
-                    : "输入说明，可多选/粘贴图片或拍照上传…"
-                }
-                disabled={sending || loadingHistory}
-                className="max-h-28 min-h-11 flex-1 resize-none rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-sm text-[var(--text-main)] outline-none focus:border-[var(--primary-light)] disabled:opacity-60"
-              />
+                  disabled={sending || loadingHistory}
+                  className="max-h-28 min-h-11 w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm text-[var(--text-main)] outline-none disabled:opacity-60"
+                />
+              </div>
+
               {sending ? (
                 <button
                   type="button"
