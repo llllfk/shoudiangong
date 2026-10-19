@@ -807,14 +807,14 @@ export function ChatApp() {
 
   if (configState === "loading") {
     return (
-      <div className="flex h-dvh flex-col">
+      <div className="app-root">
         <AppHeader onToggleSidebar={() => undefined} showMenu={false} />
-        <div className="relative flex flex-1 flex-col items-center justify-center gap-4 bg-white">
-          <div
-            className="spinner h-[38px] w-[38px] rounded-full border-[3px] border-[rgba(18,48,92,0.15)] border-t-[#12305c]"
-            aria-hidden="true"
-          />
-          <span className="text-sm tracking-wide text-[var(--text-sub)]">
+        <div
+          className="chat-main"
+          style={{ alignItems: "center", justifyContent: "center", gap: 16 }}
+        >
+          <div className="spinner lg" aria-hidden="true" />
+          <span style={{ color: "var(--text-sub)", fontSize: 14 }}>
             正在连接检修助手
           </span>
         </div>
@@ -824,20 +824,34 @@ export function ChatApp() {
 
   if (configState === "missing") {
     return (
-      <div className="flex h-dvh flex-col">
+      <div className="app-root">
         <AppHeader onToggleSidebar={() => undefined} showMenu={false} />
-        <div className="flex flex-1 items-center justify-center bg-[var(--bg)] p-6">
-          <div className="w-full max-w-[380px] rounded-xl border border-[var(--line)] bg-white px-[26px] py-7 text-center shadow-[0_6px_24px_rgba(11,30,58,0.08)]">
-            <div
-              className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[14px] bg-gradient-to-br from-[#12305c] to-[#1c4f8f] text-[26px] text-white"
-              aria-hidden="true"
-            >
+        <div
+          className="chat-main"
+          style={{ alignItems: "center", justifyContent: "center", padding: 24 }}
+        >
+          <div className="center-card">
+            <div className="center-icon" aria-hidden="true">
               ⚙
             </div>
-            <p className="mb-2 text-base font-bold text-[var(--text-main)]">
+            <p
+              style={{
+                margin: "0 0 8px",
+                fontSize: 16,
+                fontWeight: 700,
+                color: "var(--text-main)",
+              }}
+            >
               系统准备中
             </p>
-            <p className="m-0 text-[13px] leading-relaxed text-[var(--text-sub)]">
+            <p
+              style={{
+                margin: 0,
+                fontSize: 13,
+                lineHeight: 1.6,
+                color: "var(--text-sub)",
+              }}
+            >
               请在服务端环境变量中配置 BOT_ID 与 BOT_PAT 后刷新页面，即可开始智能检修辅助。
             </p>
           </div>
@@ -847,40 +861,32 @@ export function ChatApp() {
   }
 
   return (
-    <div className="flex h-dvh flex-col">
+    <div className="app-root">
       <AppHeader
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         sidebarOpen={sidebarOpen}
         showMenu
       />
 
-      <div className="relative flex min-h-0 flex-1">
+      <div className="app-body">
         {sidebarOpen && (
           <button
             type="button"
             aria-label="关闭侧栏"
-            className="absolute inset-0 z-20 bg-black/35 md:hidden"
+            className="side-mask"
             onClick={() => setSidebarOpen(false)}
           />
         )}
 
-        <aside
-          className={`absolute inset-y-0 left-0 z-30 flex w-[280px] flex-col border-r border-[var(--line)] bg-[#f7f9fc] transition-transform duration-200 ${
-            sidebarOpen
-              ? "translate-x-0 md:static md:z-0"
-              : "pointer-events-none -translate-x-full"
-          }`}
-        >
-          <div className="flex items-center gap-2 border-b border-[var(--line)] p-3">
+        <aside className={`side-panel${sidebarOpen ? " is-open" : ""}`}>
+          <div className="side-head">
             <button
               type="button"
               onClick={handleNewSession}
               disabled={sending}
-              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg bg-[var(--primary-light)] px-3 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+              className="btn-primary btn-block"
             >
-              <span className="text-base leading-none" aria-hidden="true">
-                +
-              </span>
+              <span aria-hidden="true">+</span>
               新建对话
             </button>
             <button
@@ -888,7 +894,7 @@ export function ChatApp() {
               aria-label="收起对话记录"
               title="收起"
               onClick={() => setSidebarOpen(false)}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-white text-[var(--text-sub)] hover:bg-[var(--bg)] hover:text-[var(--primary-light)]"
+              className="side-collapse"
             >
               <svg
                 width="16"
@@ -904,17 +910,11 @@ export function ChatApp() {
             </button>
           </div>
 
-          <div className="px-3 pb-1 pt-3">
-            <p className="text-xs font-semibold tracking-wide text-[var(--text-sub)]">
-              对话记录
-            </p>
-          </div>
+          <p className="side-label">对话记录</p>
 
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-3">
+          <div className="side-list">
             {conversations.length === 0 && (
-              <p className="px-2 py-6 text-center text-[13px] text-[var(--text-sub)]">
-                暂无历史记录
-              </p>
+              <p className="side-empty">暂无历史记录</p>
             )}
             {conversations.map((item) => {
               const selected = item.conversationId === activeId;
@@ -926,16 +926,10 @@ export function ChatApp() {
                   onClick={() =>
                     void handleSelectConversation(item.conversationId)
                   }
-                  className={`w-full rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-60 ${
-                    selected
-                      ? "bg-[rgba(18,48,92,0.1)] text-[var(--primary-dark)]"
-                      : "text-[var(--text-main)] hover:bg-white"
-                  }`}
+                  className={`side-item${selected ? " is-active" : ""}`}
                 >
-                  <div className="truncate text-[13px] font-medium leading-5">
-                    {item.title}
-                  </div>
-                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-[var(--text-sub)]">
+                  <div className="side-item-title">{item.title}</div>
+                  <div className="side-item-meta">
                     <span>{formatListTime(item.updatedAt)}</span>
                     <span>{item.messageCount} 条</span>
                   </div>
@@ -945,27 +939,18 @@ export function ChatApp() {
           </div>
         </aside>
 
-        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-[var(--bg)]">
+        <main className="chat-main">
           {errorToast && (
-            <div
-              className="absolute left-1/2 top-3 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-2 rounded-lg border border-[#ffe2a8] bg-[#fff7e6] px-3.5 py-2 text-[13px] text-[#8a5a00] shadow-[0_4px_14px_rgba(138,90,0,0.12)]"
-              role="status"
-            >
+            <div className="toast-warn" role="status">
               <span aria-hidden="true">⚠</span>
               <span>{errorToast}</span>
             </div>
           )}
 
-          <div
-            ref={listRef}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4 sm:px-4"
-          >
+          <div ref={listRef} className="msg-list">
             {loadingHistory && (
-              <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-[var(--text-sub)]">
-                <div
-                  className="spinner h-4 w-4 rounded-full border-2 border-[rgba(18,48,92,0.15)] border-t-[#12305c]"
-                  aria-hidden="true"
-                />
+              <div className="loading-row">
+                <div className="spinner" aria-hidden="true" />
                 加载对话中…
               </div>
             )}
@@ -982,18 +967,15 @@ export function ChatApp() {
               ))}
 
             {sending && (
-              <div
-                className="send-hint px-1 text-[13px] text-[var(--primary-light)]"
-                aria-live="polite"
-              >
+              <div className="send-hint" aria-live="polite">
                 {sendHint}
               </div>
             )}
           </div>
 
-          <div className="border-t border-[var(--line)] bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4">
+          <div className="composer">
             {shortcuts.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
+              <div className="chip-row">
                 {shortcuts.map((sc) => (
                   <button
                     key={sc.id}
@@ -1001,7 +983,7 @@ export function ChatApp() {
                     title={sc.description || sc.queryTemplate || sc.name}
                     disabled={sending || loadingHistory}
                     onClick={() => applyShortcut(sc)}
-                    className="shrink-0 rounded-full border border-[var(--line)] bg-[var(--bg)] px-3 py-1.5 text-[12px] text-[var(--primary-light)] disabled:opacity-45"
+                    className="chip"
                   >
                     {sc.name}
                   </button>
@@ -1009,13 +991,13 @@ export function ChatApp() {
               </div>
             )}
 
-            <div className="flex items-end gap-2">
+            <div className="composer-row">
               <input
                 ref={cameraInputRef}
                 type="file"
                 accept="image/*"
                 capture="environment"
-                className="hidden"
+                className="file-hidden"
                 onChange={(e) => {
                   pickImageFiles(e.target.files);
                   e.target.value = "";
@@ -1026,28 +1008,20 @@ export function ChatApp() {
                 type="file"
                 accept="image/*"
                 multiple
-                className="hidden"
+                className="file-hidden"
                 onChange={(e) => {
                   pickImageFiles(e.target.files);
                   e.target.value = "";
                 }}
               />
 
-              <div ref={attachMenuRef} className="relative shrink-0">
+              <div ref={attachMenuRef} className="attach-wrap">
                 {attachMenuOpen && (
-                  <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 min-w-[148px] overflow-hidden rounded-lg border border-[var(--line)] bg-white shadow-[0_8px_24px_rgba(11,30,58,0.12)]">
-                    <button
-                      type="button"
-                      onClick={openCamera}
-                      className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] text-[var(--text-main)] hover:bg-[var(--bg)]"
-                    >
+                  <div className="attach-menu">
+                    <button type="button" onClick={openCamera}>
                       拍照
                     </button>
-                    <button
-                      type="button"
-                      onClick={openGallery}
-                      className="flex w-full items-center gap-2 border-t border-[var(--line)] px-3.5 py-2.5 text-left text-[13px] text-[var(--text-main)] hover:bg-[var(--bg)]"
-                    >
+                    <button type="button" onClick={openGallery}>
                       选择照片（可多选）
                     </button>
                   </div>
@@ -1062,7 +1036,7 @@ export function ChatApp() {
                     pendingImages.length >= MAX_PENDING_IMAGES
                   }
                   onClick={() => setAttachMenuOpen((v) => !v)}
-                  className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--bg)] text-[var(--primary-light)] disabled:opacity-50"
+                  className="btn-ghost"
                 >
                   <svg
                     width="20"
@@ -1079,35 +1053,34 @@ export function ChatApp() {
                 </button>
               </div>
 
-              <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-[var(--line)] bg-[var(--bg)] focus-within:border-[var(--primary-light)]">
+              <div className="composer-box">
                 {previewUrls.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-2.5 py-2">
+                  <div className="pending-row">
                     {previewUrls.map((url, index) => (
-                      <div key={`${url}-${index}`} className="relative">
+                      <div key={`${url}-${index}`} className="pending-thumb">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={url}
                           alt={`待发送部件照片 ${index + 1}`}
-                          className="h-14 w-14 rounded-lg border border-[var(--line)] object-cover"
                         />
                         <button
                           type="button"
                           onClick={() => removePendingAt(index)}
                           disabled={sending}
                           aria-label={`移除第 ${index + 1} 张图片`}
-                          className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#12305c] text-[11px] leading-none text-white disabled:opacity-50"
+                          className="pending-remove"
                         >
                           ×
                         </button>
                       </div>
                     ))}
-                    <span className="text-[12px] text-[var(--text-sub)]">
+                    <span className="pending-meta">
                       {previewUrls.length}/{MAX_PENDING_IMAGES}
                     </span>
                     <button
                       type="button"
                       onClick={clearPendingImages}
-                      className="text-[13px] text-[var(--text-sub)] underline"
+                      className="pending-clear"
                       disabled={sending}
                     >
                       清空
@@ -1134,7 +1107,6 @@ export function ChatApp() {
                         : "输入说明，可多选/粘贴图片或拍照上传…"
                   }
                   disabled={sending || loadingHistory}
-                  className="max-h-28 min-h-11 w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm text-[var(--text-main)] outline-none disabled:opacity-60"
                 />
               </div>
 
@@ -1142,7 +1114,7 @@ export function ChatApp() {
                 <button
                   type="button"
                   onClick={() => void handleStop()}
-                  className="h-11 shrink-0 rounded-lg bg-[#b42318] px-4 text-sm font-medium text-white"
+                  className="btn-primary btn-stop"
                 >
                   结束
                 </button>
@@ -1154,7 +1126,7 @@ export function ChatApp() {
                     loadingHistory ||
                     (!input.trim() && pendingImages.length === 0)
                   }
-                  className="h-11 shrink-0 rounded-lg bg-[var(--primary-light)] px-4 text-sm font-medium text-white disabled:opacity-45"
+                  className="btn-primary"
                 >
                   发送
                 </button>
@@ -1181,8 +1153,8 @@ function AppHeader({
   showMenu: boolean;
 }) {
   return (
-    <header className="relative z-[1001] flex h-14 items-center justify-between bg-gradient-to-r from-[#0b1e3a] to-[#12305c] px-[18px] shadow-[0_2px_8px_rgba(11,30,58,0.25)]">
-      <div className="flex min-w-0 items-center gap-3">
+    <header className="app-header">
+      <div className="app-header-main">
         {showMenu && (
           <button
             type="button"
@@ -1190,7 +1162,7 @@ function AppHeader({
             aria-expanded={sidebarOpen}
             title={sidebarOpen ? "收起对话记录" : "打开对话记录"}
             onClick={onToggleSidebar}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white"
+            className="icon-btn"
           >
             {sidebarOpen ? (
               <svg
@@ -1219,16 +1191,11 @@ function AppHeader({
             )}
           </button>
         )}
-        <span
-          className="status-dot h-[10px] w-[10px] shrink-0 rounded-full bg-[var(--accent)]"
-          aria-hidden="true"
-        />
-        <h1 className="m-0 truncate text-[17px] font-bold tracking-wide text-white">
-          受电弓智能检修系统
-        </h1>
+        <span className="status-dot" aria-hidden="true" />
+        <h1 className="app-title">受电弓智能检修系统</h1>
       </div>
       <span
-        className="ml-3 max-w-[48%] truncate rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs tracking-wide text-white/85 sm:max-w-none"
+        className="app-badge"
         title="AI 大模型外观检测与参数智能比对系统"
       >
         AI 大模型外观检测与参数智能比对系统
@@ -1383,11 +1350,7 @@ function MessageBubble({
   busyDocUrl?: string | null;
 }) {
   if (message.role === "system") {
-    return (
-      <div className="mx-auto max-w-xl rounded-lg border border-[#ffe2a8] bg-[#fff7e6] px-3 py-2 text-[13px] text-[#8a5a00]">
-        {message.content}
-      </div>
-    );
+    return <div className="msg-system">{message.content}</div>;
   }
 
   return (
@@ -1426,23 +1389,16 @@ function MessageBubbleBody({
   const showSpeak = !isUser && supported && speechText.length > 0;
 
   return (
-    <div
-      className={`msg-row ${isUser ? "justify-end" : "justify-start"}`}
-    >
-      <div
-        className={`msg-bubble px-3.5 py-2.5 text-sm leading-relaxed ${
-          isUser ? "is-user text-white" : "text-[var(--text-main)]"
-        }`}
-      >
+    <div className={`msg-row ${isUser ? "is-user" : "is-assistant"}`}>
+      <div className={`msg-bubble${isUser ? " is-user" : ""}`}>
         {previewImages.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
+          <div className="msg-images">
             {previewImages.map((url, index) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 key={`${url}-${index}`}
                 src={url}
                 alt={`部件照片 ${index + 1}`}
-                className="max-h-48 w-auto max-w-[140px] rounded-lg object-cover"
               />
             ))}
           </div>
@@ -1450,7 +1406,7 @@ function MessageBubbleBody({
         {isUser ? (
           <div className="msg-user-text">{message.content}</div>
         ) : (
-          <div className="chat-md break-words">
+          <div className="chat-md">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -1470,13 +1426,20 @@ function MessageBubbleBody({
 
                   if (isDoc && (onOpenDocument || onDownloadDocument)) {
                     return (
-                      <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          flexWrap: "wrap",
+                          gap: "4px 8px",
+                          alignItems: "baseline",
+                        }}
+                      >
                         {onOpenDocument && (
                           <button
                             type="button"
                             onClick={() => void onOpenDocument(url, label)}
                             disabled={busy}
-                            className="cursor-pointer border-0 bg-transparent p-0 text-left font-inherit text-[var(--primary-light)] underline underline-offset-2 disabled:opacity-60"
+                            className="doc-link"
                           >
                             {busy ? `处理中「${label}」…` : children}
                           </button>
@@ -1486,7 +1449,7 @@ function MessageBubbleBody({
                             type="button"
                             onClick={() => void onDownloadDocument(url, label)}
                             disabled={busy}
-                            className="cursor-pointer rounded border border-[var(--line)] bg-[var(--bg)] px-1.5 py-0.5 text-[12px] text-[var(--primary-light)] disabled:opacity-60"
+                            className="doc-download"
                           >
                             下载到本地
                           </button>
@@ -1495,17 +1458,8 @@ function MessageBubbleBody({
                     );
                   }
 
-                  // 非文档链接：同源页内打开，不另开系统浏览器标签
-                  return (
-                    <a
-                      href={url || undefined}
-                      className="text-[var(--primary-light)] underline underline-offset-2"
-                    >
-                      {children}
-                    </a>
-                  );
+                  return <a href={url || undefined}>{children}</a>;
                 },
-                // 智能体返回的参考图不展示，只保留文字
                 img: () => null,
               }}
             >
@@ -1514,16 +1468,12 @@ function MessageBubbleBody({
           </div>
         )}
         {showSpeak && (
-          <div className="mt-2 flex justify-end border-t border-[var(--line)] pt-2">
+          <div className="speak-bar">
             <button
               type="button"
               onClick={toggle}
               aria-pressed={speaking}
-              className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[12px] ${
-                speaking
-                  ? "border-[#b42318]/30 bg-[#fef3f2] text-[#b42318]"
-                  : "border-[var(--line)] bg-[var(--bg)] text-[var(--primary-light)]"
-              }`}
+              className={`speak-btn${speaking ? " is-on" : ""}`}
             >
               <svg
                 width="14"
