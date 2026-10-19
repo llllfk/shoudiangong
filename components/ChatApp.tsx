@@ -964,9 +964,10 @@ export function ChatApp() {
                   onOpenDocument={openDocument}
                   onDownloadDocument={downloadDocument}
                   busyDocUrl={docBusyUrl}
-                  onSpeechUnsupported={() =>
+                  onSpeechError={(msg) =>
                     showError(
-                      "朗读失败。请确认 BOT_PAT 已开通 createSpeech，或稍后重试",
+                      msg ||
+                        "豆包朗读失败。请确认 BOT_PAT 已开通 createSpeech",
                     )
                   }
                 />
@@ -1252,14 +1253,11 @@ function stopSpeechPlayback() {
 function useSpeechPlayback(
   messageId: string,
   text: string,
-  onUnsupported?: () => void,
+  onSpeechError?: (message: string) => void,
 ) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.speechSynthesis?.getVoices();
-    }
     const listener: SpeechListener = (id) => setActiveId(id);
     speechListeners.add(listener);
     setActiveId(speakingMessageId);
@@ -1275,7 +1273,7 @@ function useSpeechPlayback(
       return;
     }
     if (!canSpeak()) {
-      onUnsupported?.();
+      onSpeechError?.("当前环境无法播放音频");
       return;
     }
     const content = text.trim();
@@ -1286,9 +1284,9 @@ function useSpeechPlayback(
 
     void speakText(content)
       .catch((err) => {
-        if (err instanceof Error && err.message === "UNSUPPORTED") {
-          onUnsupported?.();
-        }
+        const msg =
+          err instanceof Error ? err.message : "豆包朗读失败";
+        onSpeechError?.(msg);
       })
       .finally(() => {
         if (speakingMessageId === messageId) {
@@ -1296,7 +1294,7 @@ function useSpeechPlayback(
           notifySpeechListeners();
         }
       });
-  }, [messageId, onUnsupported, text]);
+  }, [messageId, onSpeechError, text]);
 
   return { speaking, toggle };
 }
@@ -1306,13 +1304,13 @@ function MessageBubble({
   onOpenDocument,
   onDownloadDocument,
   busyDocUrl,
-  onSpeechUnsupported,
+  onSpeechError,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
   onDownloadDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
-  onSpeechUnsupported?: () => void;
+  onSpeechError?: (message: string) => void;
 }) {
   if (message.role === "system") {
     return <div className="msg-system">{message.content}</div>;
@@ -1324,7 +1322,7 @@ function MessageBubble({
       onOpenDocument={onOpenDocument}
       onDownloadDocument={onDownloadDocument}
       busyDocUrl={busyDocUrl}
-      onSpeechUnsupported={onSpeechUnsupported}
+      onSpeechError={onSpeechError}
     />
   );
 }
@@ -1334,20 +1332,20 @@ function MessageBubbleBody({
   onOpenDocument,
   onDownloadDocument,
   busyDocUrl,
-  onSpeechUnsupported,
+  onSpeechError,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
   onDownloadDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
-  onSpeechUnsupported?: () => void;
+  onSpeechError?: (message: string) => void;
 }) {
   const isUser = message.role === "user";
   const speechText = isUser ? "" : plainTextForSpeech(message.content);
   const { speaking, toggle } = useSpeechPlayback(
     message.id,
     speechText,
-    onSpeechUnsupported,
+    onSpeechError,
   );
   const previewImages =
     message.imagePreviewUrls && message.imagePreviewUrls.length > 0

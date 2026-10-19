@@ -1,6 +1,5 @@
 /**
- * 朗读走服务端豆包音色（/api/tts）+ 浏览器 Audio 播放。
- * 不依赖 Capacitor 插件，避免云端构建 Module not found。
+ * 朗读仅使用服务端豆包音色（/api/tts）+ Audio 播放，不回退系统/浏览器语音。
  */
 
 /** 扣子 speech input 上限 1024 字节，略留余量 */
@@ -56,20 +55,13 @@ export async function stopSpeaking(): Promise<void> {
     currentAudio.src = "";
     currentAudio = null;
   }
-  if (typeof window !== "undefined" && window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-  }
 }
 
-async function fetchDoubaoChunk(
-  text: string,
-  signal?: AbortSignal,
-): Promise<Blob> {
+async function fetchDoubaoChunk(text: string): Promise<Blob> {
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
-    signal,
   });
   if (!res.ok) {
     let message = "豆包语音合成失败";
@@ -107,9 +99,15 @@ function playBlob(blob: Blob, token: number): Promise<void> {
   });
 }
 
-async function speakViaDoubao(text: string): Promise<void> {
-  const chunks = chunkTextForTts(text);
+export async function speakText(text: string): Promise<void> {
+  const content = text.trim();
+  if (!content) return;
+
+  await stopSpeaking();
+
+  const chunks = chunkTextForTts(content);
   if (chunks.length === 0) return;
+
   const token = playToken;
   for (const chunk of chunks) {
     if (token !== playToken) return;
@@ -117,40 +115,4 @@ async function speakViaDoubao(text: string): Promise<void> {
     if (token !== playToken) return;
     await playBlob(blob, token);
   }
-}
-
-async function speakViaWeb(text: string): Promise<void> {
-  if (typeof window === "undefined" || !window.speechSynthesis) {
-    throw new Error("UNSUPPORTED");
-  }
-  window.speechSynthesis.getVoices();
-  await new Promise<void>((resolve, reject) => {
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = "zh-CN";
-    utter.rate = 0.95;
-    utter.onend = () => resolve();
-    utter.onerror = () => reject(new Error("SPEECH_ERROR"));
-    window.speechSynthesis.speak(utter);
-  });
-}
-
-export async function speakText(text: string): Promise<void> {
-  const content = text.trim();
-  if (!content) return;
-
-  await stopSpeaking();
-
-  try {
-    await speakViaDoubao(content);
-    return;
-  } catch {
-    // 豆包失败时回退浏览器语音
-  }
-
-  if (typeof window !== "undefined" && window.speechSynthesis) {
-    await speakViaWeb(content);
-    return;
-  }
-
-  throw new Error("UNSUPPORTED");
 }
