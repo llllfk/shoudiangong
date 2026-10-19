@@ -1,9 +1,7 @@
 /**
- * 朗读优先走服务端豆包音色（/api/tts）；失败时再回退系统 TTS。
+ * 朗读走服务端豆包音色（/api/tts）+ 浏览器 Audio 播放。
+ * 不依赖 Capacitor 插件，避免云端构建 Module not found。
  */
-
-import { Capacitor } from "@capacitor/core";
-import { TextToSpeech } from "@capacitor-community/text-to-speech";
 
 /** 扣子 speech input 上限 1024 字节，略留余量 */
 const MAX_TTS_BYTES = 900;
@@ -47,37 +45,8 @@ export function chunkTextForTts(text: string): string[] {
   return chunks;
 }
 
-function isNativeApp(): boolean {
-  try {
-    return Capacitor.isNativePlatform();
-  } catch {
-    return false;
-  }
-}
-
-function hasWebSpeech(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.speechSynthesis !== "undefined"
-  );
-}
-
 export function canSpeak(): boolean {
-  // 页面朗读走服务端豆包；环境只要能播音频即可
   return typeof window !== "undefined";
-}
-
-async function stopNativeAndWeb(): Promise<void> {
-  if (isNativeApp()) {
-    try {
-      await TextToSpeech.stop();
-    } catch {
-      // ignore
-    }
-  }
-  if (hasWebSpeech()) {
-    window.speechSynthesis.cancel();
-  }
 }
 
 export async function stopSpeaking(): Promise<void> {
@@ -87,10 +56,15 @@ export async function stopSpeaking(): Promise<void> {
     currentAudio.src = "";
     currentAudio = null;
   }
-  await stopNativeAndWeb();
+  if (typeof window !== "undefined" && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
 }
 
-async function fetchDoubaoChunk(text: string, signal?: AbortSignal): Promise<Blob> {
+async function fetchDoubaoChunk(
+  text: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -145,18 +119,10 @@ async function speakViaDoubao(text: string): Promise<void> {
   }
 }
 
-async function speakViaNative(text: string): Promise<void> {
-  await TextToSpeech.speak({
-    text,
-    lang: "zh-CN",
-    rate: 0.95,
-    pitch: 1.0,
-    volume: 1.0,
-    category: "playback",
-  });
-}
-
 async function speakViaWeb(text: string): Promise<void> {
+  if (typeof window === "undefined" || !window.speechSynthesis) {
+    throw new Error("UNSUPPORTED");
+  }
   window.speechSynthesis.getVoices();
   await new Promise<void>((resolve, reject) => {
     const utter = new SpeechSynthesisUtterance(text);
@@ -178,15 +144,10 @@ export async function speakText(text: string): Promise<void> {
     await speakViaDoubao(content);
     return;
   } catch {
-    // 豆包合成失败时回退本机音色，保证按钮仍可用
+    // 豆包失败时回退浏览器语音
   }
 
-  if (isNativeApp()) {
-    await speakViaNative(content);
-    return;
-  }
-
-  if (hasWebSpeech()) {
+  if (typeof window !== "undefined" && window.speechSynthesis) {
     await speakViaWeb(content);
     return;
   }
