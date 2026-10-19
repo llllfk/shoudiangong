@@ -41,7 +41,7 @@ type ClientEvent =
   | { type: "error"; error: string };
 
 /**
- * 流式对话：把扣子 SSE 转成 NDJSON，实时推送 reasoning / answer。
+ * 流式对话：SSE 推送 reasoning / answer，便于网关边收边刷。
  * 失败时前端可回退到 /api/chat + 轮询。
  */
 export async function POST(request: NextRequest) {
@@ -119,7 +119,10 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (event: ClientEvent) => {
-          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          // SSE：data 行 + 空行，利于代理分段转发
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+          );
         };
 
         let convId = "";
@@ -127,6 +130,56 @@ export async function POST(request: NextRequest) {
         let answer = "";
         let reasoning = "";
         let finished = false;
+
+        // 先推一段注释，减少反向代理整包缓冲
+        controller.enqueue(encoder.encode(`: stream-open\n\n`));
+
+        const persistUser = (cId: string, cChat: string) => {
+          if (persistedUser || !isDatabaseConfigured()) return;
+          persistedUser = true;
+          void ensureConversation(cId, getUserId())
+            .then(() =>
+              appendMessage({
+                conversationId: cId,
+                role: "user",
+                content: userContent,
+                imageUri: encodeMultiValue(allImageUris),
+                imageUrl: encodeMultiValue(allImageUrls),
+                cozeFileId: encodeMultiValue(allFileIds),
+                cozeChatId: cChat,
+              }),
+            )
+            .catch((persistErr) => {
+              console.error("[chat/stream] persist user failed:", persistErr);
+            });
+        };
+
+        const persistAssistant = async (
+          cId: string,
+          cChat: string,
+          finalAnswer: string,
+          finalReasoning: string,
+        ) => {
+          if (persistedAssistant || !isDatabaseConfigured()) return;
+          persistedAssistant = true;
+          try {
+            const exists = await hasAssistantForChat(cId, cChat);
+            if (!exists) {
+              await appendMessage({
+                conversationId: cId,
+                role: "assistant",
+                content: finalAnswer,
+                reasoning: finalReasoning || null,
+                cozeChatId: cChat,
+              });
+            }
+          } catch (persistErr) {
+            console.error(
+              "[chat/stream] persist assistant failed:",
+              persistErr,
+            );
+          }
+        };
 
         try {
           for await (const piece of iterateCozeChatStream(cozeRes.body!)) {
@@ -140,24 +193,7 @@ export async function POST(request: NextRequest) {
                 conversationId: convId,
                 chatId,
               });
-
-              if (!persistedUser && isDatabaseConfigured()) {
-                persistedUser = true;
-                try {
-                  await ensureConversation(convId, getUserId());
-                  await appendMessage({
-                    conversationId: convId,
-                    role: "user",
-                    content: userContent,
-                    imageUri: encodeMultiValue(allImageUris),
-                    imageUrl: encodeMultiValue(allImageUrls),
-                    cozeFileId: encodeMultiValue(allFileIds),
-                    cozeChatId: chatId,
-                  });
-                } catch (persistErr) {
-                  console.error("[chat/stream] persist user failed:", persistErr);
-                }
-              }
+              persistUser(convId, chatId);
               continue;
             }
 
@@ -188,31 +224,7 @@ export async function POST(request: NextRequest) {
                   error: "对话已完成但未取得回复内容",
                 });
               } else {
-                if (
-                  !persistedAssistant &&
-                  isDatabaseConfigured() &&
-                  convId &&
-                  chatId
-                ) {
-                  persistedAssistant = true;
-                  try {
-                    const exists = await hasAssistantForChat(convId, chatId);
-                    if (!exists) {
-                      await appendMessage({
-                        conversationId: convId,
-                        role: "assistant",
-                        content: answer,
-                        reasoning: reasoning || null,
-                        cozeChatId: chatId,
-                      });
-                    }
-                  } catch (persistErr) {
-                    console.error(
-                      "[chat/stream] persist assistant failed:",
-                      persistErr,
-                    );
-                  }
-                }
+                await persistAssistant(convId, chatId, answer, reasoning);
                 send({
                   type: "done",
                   conversationId: convId,
@@ -228,6 +240,7 @@ export async function POST(request: NextRequest) {
 
           if (!finished && !request.signal.aborted) {
             if (answer.trim() && convId && chatId) {
+              await persistAssistant(convId, chatId, answer, reasoning);
               send({
                 type: "done",
                 conversationId: convId,
@@ -259,9 +272,10 @@ export async function POST(request: NextRequest) {
 
     return new Response(stream, {
       headers: {
-        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       },
     });
   } catch (error) {

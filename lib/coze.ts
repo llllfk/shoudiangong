@@ -381,6 +381,8 @@ export async function* iterateCozeChatStream(
   let conversationId = "";
   let chatId = "";
   let metaSent = false;
+  let gotReasoningDelta = false;
+  let gotAnswerDelta = false;
 
   const emitMeta = function* (): Generator<CozeStreamPiece> {
     if (!metaSent && conversationId && chatId) {
@@ -389,11 +391,18 @@ export async function* iterateCozeChatStream(
     }
   };
 
+  const readReasoning = (data: Record<string, unknown>): string => {
+    if (typeof data.reasoning_content === "string") return data.reasoning_content;
+    if (typeof data.reasoningContent === "string") return data.reasoningContent;
+    return "";
+  };
+
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      // 统一 CRLF，避免扣子/网关用 \r\n\r\n 分隔时解析卡住
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
       let sep: number;
       while ((sep = buffer.indexOf("\n\n")) >= 0) {
@@ -468,21 +477,25 @@ export async function* iterateCozeChatStream(
           yield* emitMeta();
 
           const msgType = typeof data.type === "string" ? data.type : "";
-          const reasoning =
-            typeof data.reasoning_content === "string"
-              ? data.reasoning_content
-              : typeof data.reasoningContent === "string"
-                ? data.reasoningContent
-                : "";
+          const reasoning = readReasoning(data);
           const content =
             typeof data.content === "string" ? data.content : "";
 
-          // delta 事件给增量；completed 可能是全文，避免重复追加
           if (eventName === "conversation.message.delta") {
             if (reasoning) {
+              gotReasoningDelta = true;
               yield { kind: "reasoning_delta", text: reasoning };
             }
             if (msgType === "answer" && content) {
+              gotAnswerDelta = true;
+              yield { kind: "answer_delta", text: content };
+            }
+          } else {
+            // 仅 completed 带全文时补一次（无 delta 的场景）
+            if (reasoning && !gotReasoningDelta) {
+              yield { kind: "reasoning_delta", text: reasoning };
+            }
+            if (msgType === "answer" && content && !gotAnswerDelta) {
               yield { kind: "answer_delta", text: content };
             }
           }

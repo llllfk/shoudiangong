@@ -304,7 +304,7 @@ export function ChatApp() {
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, sending]);
+  }, [messages, sending, liveReasoning]);
 
   const showError = useCallback((msg: string) => {
     setErrorToast(msg);
@@ -698,70 +698,94 @@ export function ChatApp() {
         const reader = streamRes.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
+        let streamDone = false;
+
+        const handleStreamEvent = async (raw: string) => {
+          let ev: {
+            type?: string;
+            conversationId?: string;
+            chatId?: string;
+            text?: string;
+            answer?: string;
+            reasoning?: string;
+            error?: string;
+          };
+          try {
+            ev = JSON.parse(raw) as typeof ev;
+          } catch {
+            return;
+          }
+
+          if (ev.type === "meta" && ev.conversationId && ev.chatId) {
+            conversationIdRef.current = ev.conversationId;
+            setActiveId(ev.conversationId);
+            activeChatRef.current = {
+              conversationId: ev.conversationId,
+              chatId: ev.chatId,
+            };
+            return;
+          }
+          if (ev.type === "reasoning" && typeof ev.text === "string") {
+            reasoning = ev.text;
+            liveReasoningRef.current = ev.text;
+            setLiveReasoning(ev.text);
+            // 让出主线程，避免同一批 chunk 里多次 setState 被合并成一次渲染
+            await new Promise<void>((r) => {
+              window.requestAnimationFrame(() => r());
+            });
+            return;
+          }
+          if (ev.type === "answer" && typeof ev.text === "string") {
+            answer = ev.text;
+            return;
+          }
+          if (ev.type === "done") {
+            if (ev.conversationId) {
+              conversationIdRef.current = ev.conversationId;
+              setActiveId(ev.conversationId);
+            }
+            if (ev.conversationId && ev.chatId) {
+              activeChatRef.current = {
+                conversationId: ev.conversationId,
+                chatId: ev.chatId,
+              };
+            }
+            answer = ev.answer || answer;
+            reasoning = (ev.reasoning || reasoning).trim();
+            if (reasoning) {
+              liveReasoningRef.current = reasoning;
+              setLiveReasoning(reasoning);
+            }
+            streamDone = true;
+            return;
+          }
+          if (ev.type === "error") {
+            throw new Error(ev.error || "流式对话失败");
+          }
+        };
 
         while (true) {
           throwIfAborted();
           const { done, value } = await reader.read();
           if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buf.indexOf("\n")) >= 0) {
-            const line = buf.slice(0, nl).trim();
-            buf = buf.slice(nl + 1);
-            if (!line) continue;
-            let ev: {
-              type?: string;
-              conversationId?: string;
-              chatId?: string;
-              text?: string;
-              answer?: string;
-              reasoning?: string;
-              error?: string;
-            };
-            try {
-              ev = JSON.parse(line) as typeof ev;
-            } catch {
-              continue;
-            }
+          buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
-            if (ev.type === "meta" && ev.conversationId && ev.chatId) {
-              conversationIdRef.current = ev.conversationId;
-              setActiveId(ev.conversationId);
-              activeChatRef.current = {
-                conversationId: ev.conversationId,
-                chatId: ev.chatId,
-              };
-              continue;
-            }
-            if (ev.type === "reasoning" && typeof ev.text === "string") {
-              reasoning = ev.text;
-              liveReasoningRef.current = ev.text;
-              setLiveReasoning(ev.text);
-              continue;
-            }
-            if (ev.type === "answer" && typeof ev.text === "string") {
-              answer = ev.text;
-              continue;
-            }
-            if (ev.type === "done") {
-              if (ev.conversationId) {
-                conversationIdRef.current = ev.conversationId;
-                setActiveId(ev.conversationId);
+          let sep: number;
+          while ((sep = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+            const dataLines: string[] = [];
+            for (const line of block.split("\n")) {
+              if (line.startsWith("data:")) {
+                dataLines.push(line.slice(5).trim());
               }
-              if (ev.conversationId && ev.chatId) {
-                activeChatRef.current = {
-                  conversationId: ev.conversationId,
-                  chatId: ev.chatId,
-                };
-              }
-              answer = ev.answer || answer;
-              reasoning = (ev.reasoning || reasoning).trim();
-              continue;
             }
-            if (ev.type === "error") {
-              throw new Error(ev.error || "流式对话失败");
-            }
+            const dataStr = dataLines.join("\n");
+            if (!dataStr || dataStr === "[DONE]") continue;
+            await handleStreamEvent(dataStr);
+            if (streamDone) break;
           }
+          if (streamDone) break;
         }
       } catch (streamErr) {
         if (
@@ -780,8 +804,13 @@ export function ChatApp() {
       }
 
       if (!answer) {
-        let conversationId = activeChatRef.current?.conversationId || "";
-        let chatId = activeChatRef.current?.chatId || "";
+        // ref 在本函数开头被置 null，TS 会错误收窄；运行时流式 meta 可能已写入
+        const activeChat = activeChatRef.current as {
+          conversationId: string;
+          chatId: string;
+        } | null;
+        let conversationId = activeChat?.conversationId || "";
+        let chatId = activeChat?.chatId || "";
 
         if (!conversationId || !chatId) {
           setHintStatus("正在提交检测请求…");
@@ -1520,6 +1549,7 @@ function ThinkingPanel({
   pendingLabel?: string;
 }) {
   const [open, setOpen] = useState(Boolean(pending || autoCollapse));
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (pending) {
@@ -1531,6 +1561,11 @@ function ThinkingPanel({
     const timer = window.setTimeout(() => setOpen(false), 1000);
     return () => window.clearTimeout(timer);
   }, [autoCollapse, pending]);
+
+  useEffect(() => {
+    if (!pending || !bodyRef.current) return;
+    bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [text, pending]);
 
   const label = pending
     ? pendingLabel || "思考中…"
@@ -1578,7 +1613,12 @@ function ThinkingPanel({
         )}
       </button>
       {(open || pending) && (
-        <div className="think-body" aria-label="思考过程">
+        <div
+          ref={bodyRef}
+          className="think-body"
+          aria-label="思考过程"
+          aria-live={pending ? "polite" : undefined}
+        >
           {text}
         </div>
       )}
