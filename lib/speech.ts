@@ -1,11 +1,12 @@
 /**
  * 朗读仅使用服务端豆包音色（/api/tts）+ Audio 播放。
+ * 按段合成：播完一段再请求下一段，点结束即中止，不预合成全文。
  */
 
-/** 扣子 speech input 上限 1024 字节，略留余量 */
-const MAX_TTS_BYTES = 900;
+/** 单段上限（扣子 speech input ≤1024 字节）；偏短以便早停时少浪费 */
+const MAX_TTS_BYTES = 480;
 /** 首段更短，合成返回更快，朗读能尽快开始 */
-const FIRST_TTS_BYTES = 180;
+const FIRST_TTS_BYTES = 160;
 
 let currentAudio: HTMLAudioElement | null = null;
 let playToken = 0;
@@ -119,7 +120,11 @@ async function fetchDoubaoChunk(
   return res.blob();
 }
 
-function playBlob(blob: Blob, token: number): Promise<void> {
+function playBlob(
+  blob: Blob,
+  token: number,
+  onNearEnd?: () => void,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     if (token !== playToken) {
       resolve();
@@ -128,11 +133,23 @@ function playBlob(blob: Blob, token: number): Promise<void> {
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
+    let nearEndFired = false;
 
     const finishOk = () => {
       URL.revokeObjectURL(url);
       if (currentAudio === audio) currentAudio = null;
       resolve();
+    };
+
+    audio.ontimeupdate = () => {
+      if (nearEndFired || token !== playToken || !onNearEnd) return;
+      const { duration, currentTime } = audio;
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      // 剩余约 1.2s 再预取下一段，早停时通常还没发起后续合成
+      if (duration - currentTime <= 1.2) {
+        nearEndFired = true;
+        onNearEnd();
+      }
     };
 
     audio.onended = finishOk;
@@ -177,17 +194,27 @@ export async function speakText(
   fetchAbort = ac;
 
   try {
-    let next = fetchDoubaoChunk(chunks[0], ac.signal);
+    let pending: Promise<Blob> | null = null;
+
     for (let i = 0; i < chunks.length; i++) {
       if (token !== playToken) throw new SpeechAbortedError();
       onPhase?.(i === 0 ? "preparing" : "playing");
-      const blob = await next;
-      if (i + 1 < chunks.length) {
-        next = fetchDoubaoChunk(chunks[i + 1], ac.signal);
-      }
+
+      const blob = await (pending ?? fetchDoubaoChunk(chunks[i], ac.signal));
+      pending = null;
       if (token !== playToken) throw new SpeechAbortedError();
+
       onPhase?.("playing");
-      await playBlob(blob, token);
+      const hasNext = i + 1 < chunks.length;
+      await playBlob(blob, token, hasNext
+        ? () => {
+            if (token !== playToken || pending) return;
+            const next = fetchDoubaoChunk(chunks[i + 1], ac.signal);
+            // 早停时可能不再 await，避免未处理的 Abort 拒绝
+            void next.catch(() => undefined);
+            pending = next;
+          }
+        : undefined);
     }
   } catch (err) {
     if (isSpeechAborted(err) || token !== playToken) {
