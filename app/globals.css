@@ -1,4 +1,18 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 旧 WebView 对 dvh 不支持时回退，避免整页高度塌陷 */
+@layer utilities {
+  .h-dvh {
+    height: 100vh;
+    height: 100dvh;
+  }
+  .min-h-dvh {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+}
 
 :root {
   --primary-dark: #0b1e3a;
@@ -12,6 +26,8 @@
 
 html,
 body {
+  /* 旧 WebView（如 HarmonyOS 2）不支持 dvh，先回退 vh */
+  height: 100vh;
   height: 100dvh;
   margin: 0;
   padding: 0;

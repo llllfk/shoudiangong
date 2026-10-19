@@ -4,7 +4,7 @@
 受电弓智能检修系统 —— Next.js 15 全栈单页应用，面向工控平板/移动端。通过扣子 OpenAPI 与检修智能体通信；对话写入 PostgreSQL，图片写入 Coze S3。无登录。报告排版由智能体侧生成，前端原样展示。
 
 ## 技术栈
-- Next.js 15+（App Router）+ TypeScript（严格模式）+ Tailwind CSS 4
+- Next.js 15+（App Router）+ TypeScript（严格模式）+ Tailwind CSS 3（兼容工控平板旧 WebView；勿升 v4）
 - PostgreSQL（`pg`）+ Coze S3 兼容存储（`@aws-sdk/client-s3`）
 - 禁止 Pages Router / GraphQL / custom server
 - 对话走服务端代理 `app/api/*` → `https://api.coze.cn`，不使用 WebChat SDK / iframe
@@ -22,7 +22,7 @@
 
 ## 结构与行为
 - 顶部标题栏：深蓝渐变（`#0B1E3A → #12305C`），左侧绿色状态点 + 标题，右侧「AI 大模型外观检测与参数智能比对系统」，高度 56px。
-- 左侧栏：「新建对话」+「对话记录」列表；桌面常显，移动端点菜单展开。
+- 左侧栏：「新建对话」+「对话记录」列表；默认收起，顶栏按钮打开/收起，侧栏内可收起。
 - 未配置 `BOT_ID` / `BOT_PAT` 时显示居中引导卡片。
 - 一场检修共用 `conversation_id`；失败/超时提示重试本轮，不自动重发。
 - 智能体标记（【部件】【检查项】【结果】【描述】【检修建议】【台账】）原样透传。

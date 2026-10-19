@@ -184,6 +184,7 @@ export function ChatApp() {
 
   const loadConversation = useCallback(
     async (conversationId: string | null) => {
+      stopSpeechPlayback();
       if (!conversationId) {
         conversationIdRef.current = null;
         setActiveId(null);
@@ -493,6 +494,7 @@ export function ChatApp() {
 
   const handleNewSession = useCallback(() => {
     if (sending) return;
+    stopSpeechPlayback();
     conversationIdRef.current = null;
     setActiveId(null);
     const opening = createOpeningMessage(prologue);
@@ -801,6 +803,8 @@ export function ChatApp() {
 
   useEffect(() => () => stopHintSequence(), [stopHintSequence]);
 
+  useEffect(() => () => stopSpeechPlayback(), []);
+
   if (configState === "loading") {
     return (
       <div className="flex h-dvh flex-col">
@@ -846,6 +850,7 @@ export function ChatApp() {
     <div className="flex h-dvh flex-col">
       <AppHeader
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        sidebarOpen={sidebarOpen}
         showMenu
       />
 
@@ -860,21 +865,42 @@ export function ChatApp() {
         )}
 
         <aside
-          className={`absolute inset-y-0 left-0 z-30 flex w-[280px] flex-col border-r border-[var(--line)] bg-[#f7f9fc] transition-transform duration-200 md:static md:z-0 md:translate-x-0 ${
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          className={`absolute inset-y-0 left-0 z-30 flex w-[280px] flex-col border-r border-[var(--line)] bg-[#f7f9fc] transition-transform duration-200 ${
+            sidebarOpen
+              ? "translate-x-0 md:static md:z-0"
+              : "pointer-events-none -translate-x-full"
           }`}
         >
-          <div className="border-b border-[var(--line)] p-3">
+          <div className="flex items-center gap-2 border-b border-[var(--line)] p-3">
             <button
               type="button"
               onClick={handleNewSession}
               disabled={sending}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--primary-light)] px-3 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg bg-[var(--primary-light)] px-3 py-2.5 text-sm font-medium text-white disabled:opacity-50"
             >
               <span className="text-base leading-none" aria-hidden="true">
                 +
               </span>
               新建对话
+            </button>
+            <button
+              type="button"
+              aria-label="收起对话记录"
+              title="收起"
+              onClick={() => setSidebarOpen(false)}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-white text-[var(--text-sub)] hover:bg-[var(--bg)] hover:text-[var(--primary-light)]"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M15 6l-6 6 6 6" />
+              </svg>
             </button>
           </div>
 
@@ -1147,9 +1173,11 @@ export function ChatApp() {
 
 function AppHeader({
   onToggleSidebar,
+  sidebarOpen = false,
   showMenu,
 }: {
   onToggleSidebar: () => void;
+  sidebarOpen?: boolean;
   showMenu: boolean;
 }) {
   return (
@@ -1158,21 +1186,37 @@ function AppHeader({
         {showMenu && (
           <button
             type="button"
-            aria-label="打开对话列表"
+            aria-label={sidebarOpen ? "收起对话记录" : "打开对话记录"}
+            aria-expanded={sidebarOpen}
+            title={sidebarOpen ? "收起对话记录" : "打开对话记录"}
             onClick={onToggleSidebar}
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white md:hidden"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white"
           >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              aria-hidden="true"
-            >
-              <path d="M4 7h16M4 12h16M4 17h16" />
-            </svg>
+            {sidebarOpen ? (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M15 6l-6 6 6 6" />
+              </svg>
+            ) : (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            )}
           </button>
         )}
         <span
@@ -1202,6 +1246,106 @@ function stripAssistantImages(content: string): string {
     .trim();
 }
 
+/** 朗读用纯文本：去掉 Markdown 标记与图片 */
+function plainTextForSpeech(content: string): string {
+  return stripAssistantImages(content)
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[*_~>#|]+/g, " ")
+    .replace(/^\s*[-+]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type SpeechListener = (id: string | null) => void;
+let speakingMessageId: string | null = null;
+const speechListeners = new Set<SpeechListener>();
+
+function notifySpeechListeners() {
+  for (const listener of speechListeners) {
+    listener(speakingMessageId);
+  }
+}
+
+function stopSpeechPlayback() {
+  if (typeof window !== "undefined" && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+  if (speakingMessageId != null) {
+    speakingMessageId = null;
+    notifySpeechListeners();
+  }
+}
+
+function pickZhVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === "undefined" || !window.speechSynthesis) return null;
+  const voices = window.speechSynthesis.getVoices();
+  return (
+    voices.find((v) => /zh[-_]?CN/i.test(v.lang)) ||
+    voices.find((v) => /^zh/i.test(v.lang)) ||
+    null
+  );
+}
+
+function startSpeechPlayback(messageId: string, text: string) {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const content = text.trim();
+  if (!content) return;
+
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(content);
+  utter.lang = "zh-CN";
+  utter.rate = 1;
+  const voice = pickZhVoice();
+  if (voice) utter.voice = voice;
+
+  speakingMessageId = messageId;
+  notifySpeechListeners();
+
+  utter.onend = () => {
+    if (speakingMessageId === messageId) {
+      speakingMessageId = null;
+      notifySpeechListeners();
+    }
+  };
+  utter.onerror = () => {
+    if (speakingMessageId === messageId) {
+      speakingMessageId = null;
+      notifySpeechListeners();
+    }
+  };
+
+  window.speechSynthesis.speak(utter);
+}
+
+function useSpeechPlayback(messageId: string, text: string) {
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [supported, setSupported] = useState(false);
+
+  useEffect(() => {
+    setSupported(typeof window.speechSynthesis !== "undefined");
+    const listener: SpeechListener = (id) => setActiveId(id);
+    speechListeners.add(listener);
+    setActiveId(speakingMessageId);
+    return () => {
+      speechListeners.delete(listener);
+    };
+  }, []);
+
+  const speaking = activeId === messageId;
+  const toggle = useCallback(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    if (speakingMessageId === messageId) {
+      stopSpeechPlayback();
+      return;
+    }
+    startSpeechPlayback(messageId, text);
+  }, [messageId, text]);
+
+  return { speaking, toggle, supported };
+}
+
 function MessageBubble({
   message,
   onOpenDocument,
@@ -1221,13 +1365,40 @@ function MessageBubble({
     );
   }
 
+  return (
+    <MessageBubbleBody
+      message={message}
+      onOpenDocument={onOpenDocument}
+      onDownloadDocument={onDownloadDocument}
+      busyDocUrl={busyDocUrl}
+    />
+  );
+}
+
+function MessageBubbleBody({
+  message,
+  onOpenDocument,
+  onDownloadDocument,
+  busyDocUrl,
+}: {
+  message: ChatMessage;
+  onOpenDocument?: (url: string, title?: string) => void;
+  onDownloadDocument?: (url: string, title?: string) => void;
+  busyDocUrl?: string | null;
+}) {
   const isUser = message.role === "user";
+  const speechText = isUser ? "" : plainTextForSpeech(message.content);
+  const { speaking, toggle, supported } = useSpeechPlayback(
+    message.id,
+    speechText,
+  );
   const previewImages =
     message.imagePreviewUrls && message.imagePreviewUrls.length > 0
       ? message.imagePreviewUrls
       : message.imagePreviewUrl
         ? [message.imagePreviewUrl]
         : [];
+  const showSpeak = !isUser && supported && speechText.length > 0;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -1317,6 +1488,40 @@ function MessageBubble({
             >
               {stripAssistantImages(message.content)}
             </ReactMarkdown>
+          </div>
+        )}
+        {showSpeak && (
+          <div className="mt-2 flex justify-end border-t border-[var(--line)] pt-2">
+            <button
+              type="button"
+              onClick={toggle}
+              aria-pressed={speaking}
+              className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[12px] ${
+                speaking
+                  ? "border-[#b42318]/30 bg-[#fef3f2] text-[#b42318]"
+                  : "border-[var(--line)] bg-[var(--bg)] text-[var(--primary-light)]"
+              }`}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                {speaking ? (
+                  <path d="M6 6h4v12H6zM14 6h4v12h-4z" />
+                ) : (
+                  <>
+                    <path d="M11 5L6 9H3v6h3l5 4V5z" />
+                    <path d="M15.5 8.5a4 4 0 010 7M18 6a7 7 0 010 12" />
+                  </>
+                )}
+              </svg>
+              {speaking ? "结束朗读" : "朗读"}
+            </button>
           </div>
         )}
       </div>
