@@ -28,6 +28,7 @@ import {
   stopSpeaking,
   type SpeakPhase,
 } from "@/lib/speech";
+import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
@@ -78,7 +79,7 @@ function mapHistoryMessages(
       id: m.id,
       role: m.role,
       content: m.content,
-      reasoning: m.reasoning?.trim() || undefined,
+      reasoning: sanitizeReasoning(m.reasoning) || undefined,
       imagePreviewUrl: urls[0],
       imagePreviewUrls: urls.length > 0 ? urls : undefined,
       createdAt: Date.parse(m.createdAt) || Date.now(),
@@ -725,9 +726,9 @@ export function ChatApp() {
               continue;
             }
             if (ev.type === "reasoning" && typeof ev.text === "string") {
-              reasoning = ev.text;
-              liveReasoningRef.current = ev.text;
-              setLiveReasoning(ev.text);
+              reasoning = sanitizeReasoning(ev.text);
+              liveReasoningRef.current = reasoning;
+              setLiveReasoning(reasoning);
               await new Promise<void>((r) => {
                 window.requestAnimationFrame(() => r());
               });
@@ -754,7 +755,7 @@ export function ChatApp() {
                 };
               }
               answer = ev.answer || answer;
-              reasoning = (ev.reasoning || reasoning).trim();
+              reasoning = sanitizeReasoning(ev.reasoning || reasoning);
               if (reasoning) {
                 liveReasoningRef.current = reasoning;
                 setLiveReasoning(reasoning);
@@ -860,7 +861,7 @@ export function ChatApp() {
           } = statusJson.data;
           if (status === "completed" && nextAnswer) {
             answer = nextAnswer;
-            reasoning = nextReasoning?.trim() || reasoning;
+            reasoning = sanitizeReasoning(nextReasoning || reasoning);
             if (reasoning) {
               liveReasoningRef.current = reasoning;
               setLiveReasoning(reasoning);
@@ -886,7 +887,9 @@ export function ChatApp() {
       }
 
       stopHintSequence();
-      const thinking = (reasoning || liveReasoningRef.current).trim();
+      const thinking = sanitizeReasoning(
+        reasoning || liveReasoningRef.current,
+      );
       setMessages((prev) => [
         ...prev,
         {
@@ -1648,7 +1651,9 @@ function MessageBubbleBody({
         : [];
   // 有助手正文就显示朗读按钮；不支持语音的环境点击后再提示
   const showSpeak = !isUser && speechText.length > 0;
-  const reasoning = !isUser ? message.reasoning?.trim() : "";
+  const reasoning = !isUser
+    ? sanitizeReasoning(message.reasoning)
+    : "";
 
   return (
     <div className={`msg-row ${isUser ? "is-user" : "is-assistant"}`}>
