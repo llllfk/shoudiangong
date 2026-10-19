@@ -12,7 +12,7 @@ import {
   ensureConversation,
   hasAssistantForChat,
 } from "@/lib/history";
-import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
+import { buildAnalysisText } from "@/lib/analysis-trace";
 import type { ChatRequestBody } from "@/types";
 
 export const runtime = "nodejs";
@@ -131,7 +131,6 @@ export async function POST(request: NextRequest) {
         let convId = "";
         let chatId = "";
         let answer = "";
-        let reasoning = "";
         let finished = false;
 
         try {
@@ -165,11 +164,6 @@ export async function POST(request: NextRequest) {
             }
 
             if (piece.kind === "reasoning_delta") {
-              reasoning += piece.text;
-              send({
-                type: "reasoning",
-                text: sanitizeReasoning(reasoning),
-              });
               continue;
             }
 
@@ -204,12 +198,18 @@ export async function POST(request: NextRequest) {
                   try {
                     const exists = await hasAssistantForChat(convId, chatId);
                     if (!exists) {
-                      const safeReasoning = sanitizeReasoning(reasoning);
+                      const trace = buildAnalysisText({
+                        text: userContent,
+                        imageCount: Math.max(
+                          allFileIds.length,
+                          allImageUrls.length,
+                        ),
+                      });
                       await appendMessage({
                         conversationId: convId,
                         role: "assistant",
                         content: answer,
-                        reasoning: safeReasoning || null,
+                        reasoning: trace,
                         cozeChatId: chatId,
                       });
                     }
@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
                   conversationId: convId,
                   chatId,
                   answer,
-                  reasoning: sanitizeReasoning(reasoning),
+                  reasoning: "",
                 });
               }
               finished = true;
@@ -240,7 +240,7 @@ export async function POST(request: NextRequest) {
                 conversationId: convId,
                 chatId,
                 answer,
-                reasoning: sanitizeReasoning(reasoning),
+                reasoning: "",
               });
             } else {
               send({ type: "error", error: "流式对话异常结束" });

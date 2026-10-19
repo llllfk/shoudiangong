@@ -28,6 +28,7 @@ import {
   stopSpeaking,
   type SpeakPhase,
 } from "@/lib/speech";
+import { buildAnalysisLines } from "@/lib/analysis-trace";
 import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
 import { createId } from "@/lib/utils";
 import type {
@@ -545,6 +546,7 @@ export function ChatApp() {
     const ac = new AbortController();
     abortRef.current = ac;
     activeChatRef.current = null;
+    let analysisTimer: number | null = null;
 
     setSending(true);
     setErrorToast(null);
@@ -636,14 +638,34 @@ export function ChatApp() {
       }
 
       throwIfAborted();
-      setHintStatus("思考中…");
       liveReasoningRef.current = "";
       setLiveReasoning("");
       liveAnswerRef.current = "";
       setLiveAnswer("");
       stopHintSequence();
-      hintLinesRef.current = ["思考中…"];
-      setHintLines(["思考中…"]);
+      hintLinesRef.current = [];
+      setHintLines([]);
+
+      const analysisLines = buildAnalysisLines({
+        text: text || displayText,
+        imageCount: imageFiles.length,
+      });
+      const analysisFull = analysisLines.join("\n");
+      let analysisShown = 0;
+      const analysisTimerId = window.setInterval(() => {
+        if (ac.signal.aborted) {
+          window.clearInterval(analysisTimerId);
+          return;
+        }
+        analysisShown = Math.min(analysisFull.length, analysisShown + 2);
+        const next = analysisFull.slice(0, analysisShown);
+        liveReasoningRef.current = next;
+        setLiveReasoning(next);
+        if (analysisShown >= analysisFull.length) {
+          window.clearInterval(analysisTimerId);
+        }
+      }, 28);
+      analysisTimer = analysisTimerId;
 
       const payload = {
         text: text || undefined,
@@ -654,7 +676,6 @@ export function ChatApp() {
       };
 
       let answer = "";
-      let reasoning = "";
 
       // 同请求内消费扣子流（NDJSON）；网关若缓冲，结束后仍能一次收齐，不会一直卡死
       try {
@@ -725,13 +746,7 @@ export function ChatApp() {
               };
               continue;
             }
-            if (ev.type === "reasoning" && typeof ev.text === "string") {
-              reasoning = sanitizeReasoning(ev.text);
-              liveReasoningRef.current = reasoning;
-              setLiveReasoning(reasoning);
-              await new Promise<void>((r) => {
-                window.requestAnimationFrame(() => r());
-              });
+            if (ev.type === "reasoning") {
               continue;
             }
             if (ev.type === "answer" && typeof ev.text === "string") {
@@ -755,11 +770,9 @@ export function ChatApp() {
                 };
               }
               answer = ev.answer || answer;
-              reasoning = sanitizeReasoning(ev.reasoning || reasoning);
-              if (reasoning) {
-                liveReasoningRef.current = reasoning;
-                setLiveReasoning(reasoning);
-              }
+              window.clearInterval(analysisTimerId);
+              liveReasoningRef.current = analysisFull;
+              setLiveReasoning(analysisFull);
               if (answer) {
                 liveAnswerRef.current = answer;
                 setLiveAnswer(answer);
@@ -856,16 +869,13 @@ export function ChatApp() {
           const {
             status,
             answer: nextAnswer,
-            reasoning: nextReasoning,
             error,
           } = statusJson.data;
           if (status === "completed" && nextAnswer) {
             answer = nextAnswer;
-            reasoning = sanitizeReasoning(nextReasoning || reasoning);
-            if (reasoning) {
-              liveReasoningRef.current = reasoning;
-              setLiveReasoning(reasoning);
-            }
+            window.clearInterval(analysisTimerId);
+            liveReasoningRef.current = analysisFull;
+            setLiveReasoning(analysisFull);
             if (answer) {
               liveAnswerRef.current = answer;
               setLiveAnswer(answer);
@@ -887,9 +897,8 @@ export function ChatApp() {
       }
 
       stopHintSequence();
-      const thinking = sanitizeReasoning(
-        reasoning || liveReasoningRef.current,
-      );
+      if (analysisTimer != null) window.clearInterval(analysisTimer);
+      const thinking = liveReasoningRef.current.trim();
       setMessages((prev) => [
         ...prev,
         {
@@ -957,6 +966,7 @@ export function ChatApp() {
         },
       ]);
     } finally {
+      if (analysisTimer != null) window.clearInterval(analysisTimer);
       stopHintSequence();
       hintLinesRef.current = [];
       setHintLines([]);
@@ -1162,7 +1172,7 @@ export function ChatApp() {
                           : "思考中…"
                     }
                     pending
-                    pendingLabel="思考中…"
+                    pendingLabel="分析中…"
                   />
                   {liveAnswer.trim() ? (
                     <div className="chat-md">
@@ -1565,10 +1575,10 @@ function ThinkingPanel({
   }, [text, pending]);
 
   const label = pending
-    ? pendingLabel || "思考中…"
+    ? pendingLabel || "分析中…"
     : open
-      ? "思考过程"
-      : "已完成思考";
+      ? "分析过程"
+      : "分析完成";
 
   return (
     <div

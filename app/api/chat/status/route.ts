@@ -6,7 +6,6 @@ import {
 } from "@/lib/coze";
 import { isDatabaseConfigured } from "@/lib/db";
 import { appendMessage, hasAssistantForChat } from "@/lib/history";
-import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
 
 /**
  * 单次查询对话状态；completed 时拉取 answer 并落库。
@@ -28,11 +27,7 @@ export async function GET(request: NextRequest) {
     const status = await retrieveChatStatus(conversationId, chatId);
 
     if (status === "completed") {
-      const { answer, reasoning: rawReasoning } = await listChatAnswer(
-        conversationId,
-        chatId,
-      );
-      const reasoning = sanitizeReasoning(rawReasoning);
+      const { answer } = await listChatAnswer(conversationId, chatId);
 
       if (isDatabaseConfigured()) {
         try {
@@ -42,7 +37,6 @@ export async function GET(request: NextRequest) {
               conversationId,
               role: "assistant",
               content: answer,
-              reasoning: reasoning || null,
               cozeChatId: chatId,
             });
           }
@@ -57,7 +51,6 @@ export async function GET(request: NextRequest) {
           conversationId,
           chatId,
           answer,
-          reasoning: reasoning || undefined,
         },
       });
     }
