@@ -58,16 +58,6 @@ export interface ChatStatusResult {
   error?: string;
 }
 
-/** 流式对话进度（短轮询） */
-export interface ChatProgressResult {
-  conversationId: string;
-  chatId: string;
-  status: "running" | "done" | "error";
-  reasoning: string;
-  answer: string;
-  error?: string;
-}
-
 /** @deprecated 兼容旧命名；现由 start + status 替代 */
 export interface ChatResult {
   conversationId: string;

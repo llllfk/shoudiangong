@@ -1,11 +1,4 @@
-import { after } from "next/server";
 import { NextRequest, NextResponse } from "next/server";
-import {
-  appendChatAnswer,
-  appendChatReasoning,
-  initChatProgress,
-  patchChatProgress,
-} from "@/lib/chat-progress";
 import {
   CozeApiError,
   createChatStreamResponse,
@@ -33,10 +26,22 @@ function asStringList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+type ClientEvent =
+  | { type: "meta"; conversationId: string; chatId: string }
+  | { type: "reasoning"; text: string }
+  | { type: "answer"; text: string }
+  | {
+      type: "done";
+      conversationId: string;
+      chatId: string;
+      answer: string;
+      reasoning: string;
+    }
+  | { type: "error"; error: string };
+
 /**
- * 启动流式对话：等拿到 conversation/chat id 后立即返回 JSON，
- * 在 after() 中继续消费扣子 SSE，写入进度供前端短轮询。
- * （平台网关常缓冲 SSE，直接推给浏览器无法边想边显示）
+ * 在同一次请求中消费扣子 SSE，并把思维链/回复以 NDJSON 推给前端。
+ * 不使用 after()：平台上后台任务常被掐断，会导致一直「思考中」。
  */
 export async function POST(request: NextRequest) {
   try {
@@ -93,136 +98,176 @@ export async function POST(request: NextRequest) {
           ? "快捷指令"
           : "");
 
-    const cozeRes = await createChatStreamResponse({
-      text,
-      imageUrl: allImageUrls[0],
-      imageUrls: allImageUrls,
-      fileId: allFileIds[0],
-      fileIds: allFileIds,
-      conversationId,
-      shortcutCommandId,
-    });
+    const cozeRes = await createChatStreamResponse(
+      {
+        text,
+        imageUrl: allImageUrls[0],
+        imageUrls: allImageUrls,
+        fileId: allFileIds[0],
+        fileIds: allFileIds,
+        conversationId,
+        shortcutCommandId,
+      },
+      request.signal,
+    );
 
-    const gen = iterateCozeChatStream(cozeRes.body!);
-    let convId = "";
-    let chatId = "";
+    const encoder = new TextEncoder();
+    let persistedUser = false;
+    let persistedAssistant = false;
 
-    for await (const piece of gen) {
-      if (piece.kind === "error") {
-        throw new CozeApiError(piece.message);
-      }
-      if (piece.kind === "meta") {
-        convId = piece.conversationId;
-        chatId = piece.chatId;
-        break;
-      }
-      if (piece.kind === "done" && piece.conversationId && piece.chatId) {
-        convId = piece.conversationId;
-        chatId = piece.chatId;
-        break;
-      }
-    }
-
-    if (!convId || !chatId) {
-      throw new CozeApiError("流式对话未返回 conversation_id / chat_id");
-    }
-
-    initChatProgress(convId, chatId);
-
-    if (isDatabaseConfigured()) {
-      try {
-        await ensureConversation(convId, getUserId());
-        await appendMessage({
-          conversationId: convId,
-          role: "user",
-          content: userContent,
-          imageUri: encodeMultiValue(allImageUris),
-          imageUrl: encodeMultiValue(allImageUrls),
-          cozeFileId: encodeMultiValue(allFileIds),
-          cozeChatId: chatId,
-        });
-      } catch (persistErr) {
-        console.error("[chat/stream] persist user failed:", persistErr);
-      }
-    }
-
-    // 响应返回后继续消费 SSE，把思维链写入进度
-    after(async () => {
-      let answer = "";
-      let reasoning = "";
-      try {
-        for await (const piece of gen) {
-          if (piece.kind === "reasoning_delta") {
-            reasoning += piece.text;
-            appendChatReasoning(convId, chatId, piece.text);
-            continue;
-          }
-          if (piece.kind === "answer_delta") {
-            answer += piece.text;
-            appendChatAnswer(convId, chatId, piece.text);
-            continue;
-          }
-          if (piece.kind === "error") {
-            patchChatProgress(convId, chatId, {
-              status: "error",
-              error: piece.message,
-            });
-            return;
-          }
-          if (piece.kind === "done") {
-            break;
-          }
-        }
-
-        if (!answer.trim()) {
-          patchChatProgress(convId, chatId, {
-            status: "error",
-            error: "对话已完成但未取得回复内容",
-            reasoning,
-            answer,
-          });
-          return;
-        }
-
-        patchChatProgress(convId, chatId, {
-          status: "done",
-          reasoning,
-          answer,
-        });
-
-        if (isDatabaseConfigured()) {
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: ClientEvent) => {
           try {
-            const exists = await hasAssistantForChat(convId, chatId);
-            if (!exists) {
-              await appendMessage({
-                conversationId: convId,
-                role: "assistant",
-                content: answer,
-                reasoning: reasoning || null,
-                cozeChatId: chatId,
-              });
-            }
-          } catch (persistErr) {
-            console.error(
-              "[chat/stream] persist assistant failed:",
-              persistErr,
+            controller.enqueue(
+              encoder.encode(`${JSON.stringify(event)}\n`),
             );
+          } catch {
+            // 客户端已断开
+          }
+        };
+
+        let convId = "";
+        let chatId = "";
+        let answer = "";
+        let reasoning = "";
+        let finished = false;
+
+        try {
+          for await (const piece of iterateCozeChatStream(cozeRes.body!)) {
+            if (request.signal.aborted) break;
+
+            if (piece.kind === "meta") {
+              convId = piece.conversationId;
+              chatId = piece.chatId;
+              send({ type: "meta", conversationId: convId, chatId });
+
+              if (!persistedUser && isDatabaseConfigured()) {
+                persistedUser = true;
+                void ensureConversation(convId, getUserId())
+                  .then(() =>
+                    appendMessage({
+                      conversationId: convId,
+                      role: "user",
+                      content: userContent,
+                      imageUri: encodeMultiValue(allImageUris),
+                      imageUrl: encodeMultiValue(allImageUrls),
+                      cozeFileId: encodeMultiValue(allFileIds),
+                      cozeChatId: chatId,
+                    }),
+                  )
+                  .catch((err) => {
+                    console.error("[chat/stream] persist user failed:", err);
+                  });
+              }
+              continue;
+            }
+
+            if (piece.kind === "reasoning_delta") {
+              reasoning += piece.text;
+              send({ type: "reasoning", text: reasoning });
+              continue;
+            }
+
+            if (piece.kind === "answer_delta") {
+              answer += piece.text;
+              send({ type: "answer", text: answer });
+              continue;
+            }
+
+            if (piece.kind === "error") {
+              send({ type: "error", error: piece.message });
+              finished = true;
+              break;
+            }
+
+            if (piece.kind === "done") {
+              convId = piece.conversationId || convId;
+              chatId = piece.chatId || chatId;
+              if (!answer.trim()) {
+                send({
+                  type: "error",
+                  error: "对话已完成但未取得回复内容",
+                });
+              } else {
+                if (
+                  !persistedAssistant &&
+                  isDatabaseConfigured() &&
+                  convId &&
+                  chatId
+                ) {
+                  persistedAssistant = true;
+                  try {
+                    const exists = await hasAssistantForChat(convId, chatId);
+                    if (!exists) {
+                      await appendMessage({
+                        conversationId: convId,
+                        role: "assistant",
+                        content: answer,
+                        reasoning: reasoning || null,
+                        cozeChatId: chatId,
+                      });
+                    }
+                  } catch (persistErr) {
+                    console.error(
+                      "[chat/stream] persist assistant failed:",
+                      persistErr,
+                    );
+                  }
+                }
+                send({
+                  type: "done",
+                  conversationId: convId,
+                  chatId,
+                  answer,
+                  reasoning,
+                });
+              }
+              finished = true;
+              break;
+            }
+          }
+
+          if (!finished && !request.signal.aborted) {
+            if (answer.trim() && convId && chatId) {
+              send({
+                type: "done",
+                conversationId: convId,
+                chatId,
+                answer,
+                reasoning,
+              });
+            } else {
+              send({ type: "error", error: "流式对话异常结束" });
+            }
+          }
+        } catch (err) {
+          if (!request.signal.aborted) {
+            const message =
+              err instanceof CozeApiError
+                ? err.message
+                : err instanceof Error
+                  ? err.message
+                  : "流式对话失败";
+            send({ type: "error", error: message });
+          }
+        } finally {
+          try {
+            controller.close();
+          } catch {
+            // ignore
           }
         }
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "流式对话失败";
-        patchChatProgress(convId, chatId, {
-          status: "error",
-          error: message,
-          reasoning,
-          answer,
-        });
-      }
+      },
     });
 
-    return NextResponse.json({
-      data: { conversationId: convId, chatId },
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
     });
   } catch (error) {
     if (error instanceof CozeApiError) {
