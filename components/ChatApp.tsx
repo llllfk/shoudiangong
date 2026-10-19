@@ -1115,12 +1115,6 @@ export function ChatApp() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onPaste={handlePasteImage}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void handleSend();
-                    }
-                  }}
                   rows={1}
                   placeholder={
                     previewUrls.length > 0
