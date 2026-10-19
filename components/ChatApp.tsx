@@ -87,6 +87,7 @@ function mapHistoryMessages(
       id: m.id,
       role: m.role,
       content: m.content,
+      reasoning: m.reasoning?.trim() || undefined,
       imagePreviewUrl: urls[0],
       imagePreviewUrls: urls.length > 0 ? urls : undefined,
       createdAt: Date.parse(m.createdAt) || Date.now(),
@@ -680,6 +681,7 @@ export function ChatApp() {
       // 短轮询取结果，避免一次请求挂太久被网关掐成 Failed to fetch
       const maxPolls = 180;
       let answer = "";
+      let reasoning = "";
       for (let i = 0; i < maxPolls; i++) {
         throwIfAborted();
         await new Promise<void>((resolve, reject) => {
@@ -707,9 +709,15 @@ export function ChatApp() {
               : "查询对话状态失败，请重试本轮",
           );
         }
-        const { status, answer: nextAnswer, error } = statusJson.data;
+        const {
+          status,
+          answer: nextAnswer,
+          reasoning: nextReasoning,
+          error,
+        } = statusJson.data;
         if (status === "completed" && nextAnswer) {
           answer = nextAnswer;
+          reasoning = nextReasoning?.trim() || "";
           break;
         }
         if (status === "canceled") {
@@ -733,6 +741,8 @@ export function ChatApp() {
           id: createId("assistant"),
           role: "assistant",
           content: answer,
+          reasoning: reasoning || undefined,
+          reasoningAutoCollapse: Boolean(reasoning),
           createdAt: Date.now(),
         },
       ]);
@@ -1349,6 +1359,54 @@ function MessageBubble({
   );
 }
 
+function ThinkingPanel({
+  text,
+  autoCollapse,
+}: {
+  text: string;
+  autoCollapse?: boolean;
+}) {
+  const [open, setOpen] = useState(Boolean(autoCollapse));
+
+  useEffect(() => {
+    if (!autoCollapse) return;
+    const timer = window.setTimeout(() => setOpen(false), 1000);
+    return () => window.clearTimeout(timer);
+  }, [autoCollapse]);
+
+  return (
+    <div className={`think-panel${open ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="think-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="think-toggle-label">
+          {open ? "思考过程" : "已完成思考"}
+        </span>
+        <svg
+          className="think-chevron"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+      {open && (
+        <div className="think-body" aria-label="思考过程">
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageBubbleBody({
   message,
   onOpenDocument,
@@ -1377,6 +1435,7 @@ function MessageBubbleBody({
         : [];
   // 有助手正文就显示朗读按钮；不支持语音的环境点击后再提示
   const showSpeak = !isUser && speechText.length > 0;
+  const reasoning = !isUser ? message.reasoning?.trim() : "";
 
   return (
     <div className={`msg-row ${isUser ? "is-user" : "is-assistant"}`}>
@@ -1396,66 +1455,76 @@ function MessageBubbleBody({
         {isUser ? (
           <div className="msg-user-text">{message.content}</div>
         ) : (
-          <div className="chat-md">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                a: ({ href, children }) => {
-                  const url = typeof href === "string" ? href : "";
-                  const label =
-                    typeof children === "string"
-                      ? children
-                      : Array.isArray(children)
-                        ? children.map(String).join("")
-                        : "文档";
-                  const isDoc = Boolean(
-                    url &&
-                      (isDocumentUrl(url) || looksLikeDocumentName(label)),
-                  );
-                  const busy = Boolean(url && busyDocUrl === url);
-
-                  if (isDoc && (onOpenDocument || onDownloadDocument)) {
-                    return (
-                      <span
-                        style={{
-                          display: "inline-flex",
-                          flexWrap: "wrap",
-                          gap: "4px 8px",
-                          alignItems: "baseline",
-                        }}
-                      >
-                        {onOpenDocument && (
-                          <button
-                            type="button"
-                            onClick={() => void onOpenDocument(url, label)}
-                            disabled={busy}
-                            className="doc-link"
-                          >
-                            {busy ? `处理中「${label}」…` : children}
-                          </button>
-                        )}
-                        {onDownloadDocument && (
-                          <button
-                            type="button"
-                            onClick={() => void onDownloadDocument(url, label)}
-                            disabled={busy}
-                            className="doc-download"
-                          >
-                            下载到本地
-                          </button>
-                        )}
-                      </span>
+          <>
+            {reasoning ? (
+              <ThinkingPanel
+                text={reasoning}
+                autoCollapse={message.reasoningAutoCollapse}
+              />
+            ) : null}
+            <div className="chat-md">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  a: ({ href, children }) => {
+                    const url = typeof href === "string" ? href : "";
+                    const label =
+                      typeof children === "string"
+                        ? children
+                        : Array.isArray(children)
+                          ? children.map(String).join("")
+                          : "文档";
+                    const isDoc = Boolean(
+                      url &&
+                        (isDocumentUrl(url) || looksLikeDocumentName(label)),
                     );
-                  }
+                    const busy = Boolean(url && busyDocUrl === url);
 
-                  return <a href={url || undefined}>{children}</a>;
-                },
-                img: () => null,
-              }}
-            >
-              {stripAssistantImages(message.content)}
-            </ReactMarkdown>
-          </div>
+                    if (isDoc && (onOpenDocument || onDownloadDocument)) {
+                      return (
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            flexWrap: "wrap",
+                            gap: "4px 8px",
+                            alignItems: "baseline",
+                          }}
+                        >
+                          {onOpenDocument && (
+                            <button
+                              type="button"
+                              onClick={() => void onOpenDocument(url, label)}
+                              disabled={busy}
+                              className="doc-link"
+                            >
+                              {busy ? `处理中「${label}」…` : children}
+                            </button>
+                          )}
+                          {onDownloadDocument && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void onDownloadDocument(url, label)
+                              }
+                              disabled={busy}
+                              className="doc-download"
+                            >
+                              下载到本地
+                            </button>
+                          )}
+                        </span>
+                      );
+                    }
+
+                    return <a href={url || undefined}>{children}</a>;
+                  },
+                  img: () => null,
+                }}
+              >
+                {stripAssistantImages(message.content)}
+              </ReactMarkdown>
+            </div>
+          </>
         )}
         {showSpeak && (
           <div className="speak-bar">

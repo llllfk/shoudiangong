@@ -376,10 +376,16 @@ export async function retrieveChatStatus(
   return (detail.status as ChatStatusValue) || "unknown";
 }
 
+export interface ChatAnswerResult {
+  answer: string;
+  /** 深度思考思维链；模型未开启或未返回时为空 */
+  reasoning: string;
+}
+
 export async function listChatAnswer(
   conversationId: string,
   chatId: string,
-): Promise<string> {
+): Promise<ChatAnswerResult> {
   const listRes = await fetch(
     `${API_BASE}/v3/chat/message/list?conversation_id=${encodeURIComponent(conversationId)}&chat_id=${encodeURIComponent(chatId)}`,
     { headers: authHeaders(false) },
@@ -393,9 +399,13 @@ export async function listChatAnswer(
   }
 
   const listPayload = listJson as { data?: unknown; code?: number };
-  let messages: Array<{ type?: string; content?: string }> = [];
+  let messages: Array<{
+    type?: string;
+    content?: string;
+    reasoning_content?: string;
+  }> = [];
   if (Array.isArray(listPayload.data)) {
-    messages = listPayload.data as Array<{ type?: string; content?: string }>;
+    messages = listPayload.data as typeof messages;
   } else if (
     listPayload.data &&
     typeof listPayload.data === "object" &&
@@ -406,15 +416,29 @@ export async function listChatAnswer(
     messages = listJson as typeof messages;
   }
 
-  const answer = messages
-    .filter((m) => m?.type === "answer" && typeof m.content === "string")
-    .map((m) => m.content as string)
-    .join("");
+  const answerParts: string[] = [];
+  const reasoningParts: string[] = [];
+  for (const m of messages) {
+    if (m?.type !== "answer") continue;
+    if (typeof m.content === "string" && m.content) {
+      answerParts.push(m.content);
+    }
+    if (
+      typeof m.reasoning_content === "string" &&
+      m.reasoning_content.trim()
+    ) {
+      reasoningParts.push(m.reasoning_content.trim());
+    }
+  }
 
+  const answer = answerParts.join("");
   if (!answer) {
     throw new CozeApiError("对话已完成但未取得回复内容");
   }
-  return answer;
+  return {
+    answer,
+    reasoning: reasoningParts.join("\n\n"),
+  };
 }
 
 export async function uploadFile(file: Blob, filename: string): Promise<string> {

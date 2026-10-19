@@ -27,7 +27,10 @@ export async function GET(request: NextRequest) {
     const status = await retrieveChatStatus(conversationId, chatId);
 
     if (status === "completed") {
-      const answer = await listChatAnswer(conversationId, chatId);
+      const { answer, reasoning } = await listChatAnswer(
+        conversationId,
+        chatId,
+      );
 
       if (isDatabaseConfigured()) {
         try {
@@ -37,6 +40,7 @@ export async function GET(request: NextRequest) {
               conversationId,
               role: "assistant",
               content: answer,
+              reasoning: reasoning || null,
               cozeChatId: chatId,
             });
           }
@@ -46,7 +50,13 @@ export async function GET(request: NextRequest) {
       }
 
       return NextResponse.json({
-        data: { status, conversationId, chatId, answer },
+        data: {
+          status,
+          conversationId,
+          chatId,
+          answer,
+          reasoning: reasoning || undefined,
+        },
       });
     }
 

@@ -74,6 +74,7 @@ export async function ensureSchema(): Promise<void> {
         );
 
         ALTER TABLE messages ADD COLUMN IF NOT EXISTS coze_chat_id VARCHAR(128);
+        ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning TEXT;
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
           ON messages (conversation_id, created_at);

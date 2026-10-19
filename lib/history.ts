@@ -5,6 +5,7 @@ export interface StoredMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  reasoning?: string | null;
   imageUri?: string | null;
   imageUrl?: string | null;
   imageUrls?: string[];
@@ -56,6 +57,7 @@ export async function appendMessage(input: {
   conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  reasoning?: string | null;
   imageUri?: string | null;
   imageUrl?: string | null;
   cozeFileId?: string | null;
@@ -63,12 +65,13 @@ export async function appendMessage(input: {
 }): Promise<void> {
   await query(
     `INSERT INTO messages
-      (conversation_id, role, content, image_uri, image_url, coze_file_id, coze_chat_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      (conversation_id, role, content, reasoning, image_uri, image_url, coze_file_id, coze_chat_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       input.conversationId,
       input.role,
       input.content,
+      input.reasoning?.trim() || null,
       input.imageUri || null,
       input.imageUrl || null,
       input.cozeFileId || null,
@@ -165,12 +168,13 @@ export async function listMessages(
     id: string;
     role: string;
     content: string;
+    reasoning: string | null;
     image_uri: string | null;
     image_url: string | null;
     coze_file_id: string | null;
     created_at: Date;
   }>(
-    `SELECT id::text, role, content, image_uri, image_url, coze_file_id, created_at
+    `SELECT id::text, role, content, reasoning, image_uri, image_url, coze_file_id, created_at
      FROM messages
      WHERE conversation_id = $1
      ORDER BY created_at ASC, id ASC`,
@@ -199,6 +203,7 @@ export async function listMessages(
       id: row.id,
       role: row.role as StoredMessage["role"],
       content: row.content,
+      reasoning: row.reasoning,
       imageUri: row.image_uri,
       imageUrl: signedUrls[0] || null,
       imageUrls: signedUrls.length > 0 ? signedUrls : undefined,

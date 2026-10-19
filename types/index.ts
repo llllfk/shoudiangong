@@ -4,6 +4,10 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  /** 模型深度思考内容（reasoning_content） */
+  reasoning?: string;
+  /** 本轮刚返回时先展开思考区，随后自动折叠 */
+  reasoningAutoCollapse?: boolean;
   /** @deprecated 使用 imagePreviewUrls */
   imagePreviewUrl?: string;
   imagePreviewUrls?: string[];
@@ -50,6 +54,7 @@ export interface ChatStatusResult {
   conversationId: string;
   chatId: string;
   answer?: string;
+  reasoning?: string;
   error?: string;
 }
 
@@ -71,6 +76,7 @@ export interface HistoryResult {
     id: string;
     role: ChatRole;
     content: string;
+    reasoning?: string | null;
     imageUrl?: string | null;
     imageUrls?: string[];
     createdAt: string;
