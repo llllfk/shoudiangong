@@ -32,6 +32,7 @@ import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
   ChatMessage,
+  ChatProgressResult,
   ChatStartResult,
   ChatStatusResult,
   ConversationItem,
@@ -52,15 +53,6 @@ type IngestedDoc = {
 type ConfigState = "loading" | "ready" | "missing";
 
 const MAX_PENDING_IMAGES = 20;
-
-/** 等待回复时依次切换，播完最后一条后停住，不循环 */
-const ANALYZING_HINTS = [
-  "正在识别部件外观特征…",
-  "对照检修标准比对中…",
-  "梳理检查项与判定结果…",
-  "整理检修建议与台账要点…",
-  "即将返回检测结论…",
-];
 
 function createOpeningMessage(prologue: string): ChatMessage | null {
   const content = prologue.trim();
@@ -164,33 +156,6 @@ export function ChatApp() {
     hintLinesRef.current = lines;
     setHintLines(lines);
   }, []);
-
-  /** 等待时在思考面板内逐条追加分析提示 */
-  const startHintSequence = useCallback(() => {
-    stopHintSequence();
-    let index = 0;
-    const lines = [ANALYZING_HINTS[0]];
-    hintLinesRef.current = lines;
-    setHintLines(lines);
-
-    const tick = () => {
-      index += 1;
-      if (index >= ANALYZING_HINTS.length) {
-        hintTimerRef.current = null;
-        return;
-      }
-      const next = [...hintLinesRef.current, ANALYZING_HINTS[index]];
-      hintLinesRef.current = next;
-      setHintLines(next);
-      if (index < ANALYZING_HINTS.length - 1) {
-        hintTimerRef.current = window.setTimeout(tick, 2800);
-      } else {
-        hintTimerRef.current = null;
-      }
-    };
-
-    hintTimerRef.current = window.setTimeout(tick, 2800);
-  }, [stopHintSequence]);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -668,9 +633,13 @@ export function ChatApp() {
       }
 
       throwIfAborted();
-      setHintStatus("正在深度思考…");
+      setHintStatus("思考中…");
       liveReasoningRef.current = "";
       setLiveReasoning("");
+      // 停止本地「正在XX」轮播，避免盖住真实思维链
+      stopHintSequence();
+      hintLinesRef.current = ["思考中…"];
+      setHintLines(["思考中…"]);
 
       const payload = {
         text: text || undefined,
@@ -682,8 +651,11 @@ export function ChatApp() {
 
       let answer = "";
       let reasoning = "";
+      let conversationId = "";
+      let chatId = "";
+      let usedProgressPoll = false;
 
-      // 优先流式：深度思考模型的 reasoning_content 主要在流式事件里返回
+      // 启动服务端流式消费 + 短轮询进度（绕过网关缓冲 SSE）
       try {
         const streamRes = await fetch("/api/chat/stream", {
           method: "POST",
@@ -691,101 +663,73 @@ export function ChatApp() {
           body: JSON.stringify(payload),
           signal: ac.signal,
         });
-        if (!streamRes.ok || !streamRes.body) {
-          throw new Error("stream unavailable");
+        const streamJson =
+          (await streamRes.json()) as ApiResponse<ChatStartResult>;
+        if (!streamRes.ok || !("data" in streamJson)) {
+          throw new Error(
+            "error" in streamJson
+              ? streamJson.error
+              : "发起流式对话失败",
+          );
         }
+        conversationId = streamJson.data.conversationId;
+        chatId = streamJson.data.chatId;
+        conversationIdRef.current = conversationId;
+        setActiveId(conversationId);
+        activeChatRef.current = { conversationId, chatId };
+        usedProgressPoll = true;
 
-        const reader = streamRes.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let streamDone = false;
-
-        const handleStreamEvent = async (raw: string) => {
-          let ev: {
-            type?: string;
-            conversationId?: string;
-            chatId?: string;
-            text?: string;
-            answer?: string;
-            reasoning?: string;
-            error?: string;
-          };
-          try {
-            ev = JSON.parse(raw) as typeof ev;
-          } catch {
-            return;
-          }
-
-          if (ev.type === "meta" && ev.conversationId && ev.chatId) {
-            conversationIdRef.current = ev.conversationId;
-            setActiveId(ev.conversationId);
-            activeChatRef.current = {
-              conversationId: ev.conversationId,
-              chatId: ev.chatId,
+        const maxPolls = 450; // ~3 分钟，400ms 一次
+        for (let i = 0; i < maxPolls; i++) {
+          throwIfAborted();
+          await new Promise<void>((resolve, reject) => {
+            const t = window.setTimeout(() => {
+              ac.signal.removeEventListener("abort", onAbort);
+              resolve();
+            }, 400);
+            const onAbort = () => {
+              window.clearTimeout(t);
+              reject(new DOMException("已结束本轮", "AbortError"));
             };
-            return;
+            ac.signal.addEventListener("abort", onAbort, { once: true });
+          });
+          throwIfAborted();
+
+          const progressRes = await fetch(
+            `/api/chat/progress?conversationId=${encodeURIComponent(conversationId)}&chatId=${encodeURIComponent(chatId)}`,
+            { signal: ac.signal },
+          );
+          const progressJson =
+            (await progressRes.json()) as ApiResponse<ChatProgressResult>;
+          if (!progressRes.ok || !("data" in progressJson)) {
+            throw new Error(
+              "error" in progressJson
+                ? progressJson.error
+                : "查询思考进度失败",
+            );
           }
-          if (ev.type === "reasoning" && typeof ev.text === "string") {
-            reasoning = ev.text;
-            liveReasoningRef.current = ev.text;
-            setLiveReasoning(ev.text);
-            // 让出主线程，避免同一批 chunk 里多次 setState 被合并成一次渲染
-            await new Promise<void>((r) => {
-              window.requestAnimationFrame(() => r());
-            });
-            return;
+          const prog = progressJson.data;
+          if (prog.reasoning) {
+            reasoning = prog.reasoning;
+            liveReasoningRef.current = prog.reasoning;
+            setLiveReasoning(prog.reasoning);
           }
-          if (ev.type === "answer" && typeof ev.text === "string") {
-            answer = ev.text;
-            return;
+          if (prog.answer) {
+            answer = prog.answer;
           }
-          if (ev.type === "done") {
-            if (ev.conversationId) {
-              conversationIdRef.current = ev.conversationId;
-              setActiveId(ev.conversationId);
-            }
-            if (ev.conversationId && ev.chatId) {
-              activeChatRef.current = {
-                conversationId: ev.conversationId,
-                chatId: ev.chatId,
-              };
-            }
-            answer = ev.answer || answer;
-            reasoning = (ev.reasoning || reasoning).trim();
+          if (prog.status === "done") {
+            answer = prog.answer || answer;
+            reasoning = (prog.reasoning || reasoning).trim();
             if (reasoning) {
               liveReasoningRef.current = reasoning;
               setLiveReasoning(reasoning);
             }
-            streamDone = true;
-            return;
+            break;
           }
-          if (ev.type === "error") {
-            throw new Error(ev.error || "流式对话失败");
+          if (prog.status === "error") {
+            // 进度失败时用同一 chat 走 status 兜底，不重新发起
+            break;
           }
-        };
-
-        while (true) {
-          throwIfAborted();
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-
-          let sep: number;
-          while ((sep = buf.indexOf("\n\n")) >= 0) {
-            const block = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-            const dataLines: string[] = [];
-            for (const line of block.split("\n")) {
-              if (line.startsWith("data:")) {
-                dataLines.push(line.slice(5).trim());
-              }
-            }
-            const dataStr = dataLines.join("\n");
-            if (!dataStr || dataStr === "[DONE]") continue;
-            await handleStreamEvent(dataStr);
-            if (streamDone) break;
-          }
-          if (streamDone) break;
         }
       } catch (streamErr) {
         if (
@@ -797,22 +741,20 @@ export function ChatApp() {
         ) {
           throw streamErr;
         }
-        // 流式失败则走轮询；若已有 chatId 不再重复发起
-        if (!answer) {
-          answer = "";
+        // 仅「启动流式」失败时才无 chatId；已启动则保留 id 做 status 兜底
+        if (!(activeChatRef.current as { chatId?: string } | null)?.chatId) {
+          usedProgressPoll = false;
         }
+        answer = "";
       }
 
+      // 进度未拿到完整回复时：有 chatId 则 status 兜底，否则非流式重发
       if (!answer) {
-        // ref 在本函数开头被置 null，TS 会错误收窄；运行时流式 meta 可能已写入
         const activeChat = activeChatRef.current as {
           conversationId: string;
           chatId: string;
         } | null;
-        let conversationId = activeChat?.conversationId || "";
-        let chatId = activeChat?.chatId || "";
-
-        if (!conversationId || !chatId) {
+        if (!activeChat?.conversationId || !activeChat?.chatId) {
           setHintStatus("正在提交检测请求…");
           const chatRes = await fetch("/api/chat", {
             method: "POST",
@@ -834,11 +776,14 @@ export function ChatApp() {
           conversationIdRef.current = conversationId;
           setActiveId(conversationId);
           activeChatRef.current = { conversationId, chatId };
+        } else {
+          conversationId = activeChat.conversationId;
+          chatId = activeChat.chatId;
         }
 
-        if (!liveReasoningRef.current) {
-          startHintSequence();
-        }
+        setHintStatus("思考中…");
+        hintLinesRef.current = ["思考中…"];
+        setHintLines(["思考中…"]);
 
         const maxPolls = 180;
         for (let i = 0; i < maxPolls; i++) {
@@ -983,7 +928,6 @@ export function ChatApp() {
     sending,
     setHintStatus,
     showError,
-    startHintSequence,
     stopHintSequence,
   ]);
 

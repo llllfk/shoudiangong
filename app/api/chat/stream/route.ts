@@ -1,4 +1,11 @@
+import { after } from "next/server";
 import { NextRequest, NextResponse } from "next/server";
+import {
+  appendChatAnswer,
+  appendChatReasoning,
+  initChatProgress,
+  patchChatProgress,
+} from "@/lib/chat-progress";
 import {
   CozeApiError,
   createChatStreamResponse,
@@ -16,7 +23,6 @@ import type { ChatRequestBody } from "@/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-/** 深度思考可能较久，放宽路由超时（平台支持时生效） */
 export const maxDuration = 300;
 
 function asStringList(value: unknown): string[] {
@@ -27,22 +33,10 @@ function asStringList(value: unknown): string[] {
     .filter(Boolean);
 }
 
-type ClientEvent =
-  | { type: "meta"; conversationId: string; chatId: string }
-  | { type: "reasoning"; text: string }
-  | { type: "answer"; text: string }
-  | {
-      type: "done";
-      conversationId: string;
-      chatId: string;
-      answer: string;
-      reasoning: string;
-    }
-  | { type: "error"; error: string };
-
 /**
- * 流式对话：SSE 推送 reasoning / answer，便于网关边收边刷。
- * 失败时前端可回退到 /api/chat + 轮询。
+ * 启动流式对话：等拿到 conversation/chat id 后立即返回 JSON，
+ * 在 after() 中继续消费扣子 SSE，写入进度供前端短轮询。
+ * （平台网关常缓冲 SSE，直接推给浏览器无法边想边显示）
  */
 export async function POST(request: NextRequest) {
   try {
@@ -99,78 +93,113 @@ export async function POST(request: NextRequest) {
           ? "快捷指令"
           : "");
 
-    const cozeRes = await createChatStreamResponse(
-      {
-        text,
-        imageUrl: allImageUrls[0],
-        imageUrls: allImageUrls,
-        fileId: allFileIds[0],
-        fileIds: allFileIds,
-        conversationId,
-        shortcutCommandId,
-      },
-      request.signal,
-    );
+    const cozeRes = await createChatStreamResponse({
+      text,
+      imageUrl: allImageUrls[0],
+      imageUrls: allImageUrls,
+      fileId: allFileIds[0],
+      fileIds: allFileIds,
+      conversationId,
+      shortcutCommandId,
+    });
 
-    const encoder = new TextEncoder();
-    let persistedUser = false;
-    let persistedAssistant = false;
+    const gen = iterateCozeChatStream(cozeRes.body!);
+    let convId = "";
+    let chatId = "";
 
-    const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        const send = (event: ClientEvent) => {
-          // SSE：data 行 + 空行，利于代理分段转发
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
-          );
-        };
+    for await (const piece of gen) {
+      if (piece.kind === "error") {
+        throw new CozeApiError(piece.message);
+      }
+      if (piece.kind === "meta") {
+        convId = piece.conversationId;
+        chatId = piece.chatId;
+        break;
+      }
+      if (piece.kind === "done" && piece.conversationId && piece.chatId) {
+        convId = piece.conversationId;
+        chatId = piece.chatId;
+        break;
+      }
+    }
 
-        let convId = "";
-        let chatId = "";
-        let answer = "";
-        let reasoning = "";
-        let finished = false;
+    if (!convId || !chatId) {
+      throw new CozeApiError("流式对话未返回 conversation_id / chat_id");
+    }
 
-        // 先推一段注释，减少反向代理整包缓冲
-        controller.enqueue(encoder.encode(`: stream-open\n\n`));
+    initChatProgress(convId, chatId);
 
-        const persistUser = (cId: string, cChat: string) => {
-          if (persistedUser || !isDatabaseConfigured()) return;
-          persistedUser = true;
-          void ensureConversation(cId, getUserId())
-            .then(() =>
-              appendMessage({
-                conversationId: cId,
-                role: "user",
-                content: userContent,
-                imageUri: encodeMultiValue(allImageUris),
-                imageUrl: encodeMultiValue(allImageUrls),
-                cozeFileId: encodeMultiValue(allFileIds),
-                cozeChatId: cChat,
-              }),
-            )
-            .catch((persistErr) => {
-              console.error("[chat/stream] persist user failed:", persistErr);
+    if (isDatabaseConfigured()) {
+      try {
+        await ensureConversation(convId, getUserId());
+        await appendMessage({
+          conversationId: convId,
+          role: "user",
+          content: userContent,
+          imageUri: encodeMultiValue(allImageUris),
+          imageUrl: encodeMultiValue(allImageUrls),
+          cozeFileId: encodeMultiValue(allFileIds),
+          cozeChatId: chatId,
+        });
+      } catch (persistErr) {
+        console.error("[chat/stream] persist user failed:", persistErr);
+      }
+    }
+
+    // 响应返回后继续消费 SSE，把思维链写入进度
+    after(async () => {
+      let answer = "";
+      let reasoning = "";
+      try {
+        for await (const piece of gen) {
+          if (piece.kind === "reasoning_delta") {
+            reasoning += piece.text;
+            appendChatReasoning(convId, chatId, piece.text);
+            continue;
+          }
+          if (piece.kind === "answer_delta") {
+            answer += piece.text;
+            appendChatAnswer(convId, chatId, piece.text);
+            continue;
+          }
+          if (piece.kind === "error") {
+            patchChatProgress(convId, chatId, {
+              status: "error",
+              error: piece.message,
             });
-        };
+            return;
+          }
+          if (piece.kind === "done") {
+            break;
+          }
+        }
 
-        const persistAssistant = async (
-          cId: string,
-          cChat: string,
-          finalAnswer: string,
-          finalReasoning: string,
-        ) => {
-          if (persistedAssistant || !isDatabaseConfigured()) return;
-          persistedAssistant = true;
+        if (!answer.trim()) {
+          patchChatProgress(convId, chatId, {
+            status: "error",
+            error: "对话已完成但未取得回复内容",
+            reasoning,
+            answer,
+          });
+          return;
+        }
+
+        patchChatProgress(convId, chatId, {
+          status: "done",
+          reasoning,
+          answer,
+        });
+
+        if (isDatabaseConfigured()) {
           try {
-            const exists = await hasAssistantForChat(cId, cChat);
+            const exists = await hasAssistantForChat(convId, chatId);
             if (!exists) {
               await appendMessage({
-                conversationId: cId,
+                conversationId: convId,
                 role: "assistant",
-                content: finalAnswer,
-                reasoning: finalReasoning || null,
-                cozeChatId: cChat,
+                content: answer,
+                reasoning: reasoning || null,
+                cozeChatId: chatId,
               });
             }
           } catch (persistErr) {
@@ -179,104 +208,21 @@ export async function POST(request: NextRequest) {
               persistErr,
             );
           }
-        };
-
-        try {
-          for await (const piece of iterateCozeChatStream(cozeRes.body!)) {
-            if (request.signal.aborted) break;
-
-            if (piece.kind === "meta") {
-              convId = piece.conversationId;
-              chatId = piece.chatId;
-              send({
-                type: "meta",
-                conversationId: convId,
-                chatId,
-              });
-              persistUser(convId, chatId);
-              continue;
-            }
-
-            if (piece.kind === "reasoning_delta") {
-              reasoning += piece.text;
-              send({ type: "reasoning", text: reasoning });
-              continue;
-            }
-
-            if (piece.kind === "answer_delta") {
-              answer += piece.text;
-              send({ type: "answer", text: answer });
-              continue;
-            }
-
-            if (piece.kind === "error") {
-              send({ type: "error", error: piece.message });
-              finished = true;
-              break;
-            }
-
-            if (piece.kind === "done") {
-              convId = piece.conversationId || convId;
-              chatId = piece.chatId || chatId;
-              if (!answer.trim()) {
-                send({
-                  type: "error",
-                  error: "对话已完成但未取得回复内容",
-                });
-              } else {
-                await persistAssistant(convId, chatId, answer, reasoning);
-                send({
-                  type: "done",
-                  conversationId: convId,
-                  chatId,
-                  answer,
-                  reasoning,
-                });
-              }
-              finished = true;
-              break;
-            }
-          }
-
-          if (!finished && !request.signal.aborted) {
-            if (answer.trim() && convId && chatId) {
-              await persistAssistant(convId, chatId, answer, reasoning);
-              send({
-                type: "done",
-                conversationId: convId,
-                chatId,
-                answer,
-                reasoning,
-              });
-            } else {
-              send({ type: "error", error: "流式对话异常结束" });
-            }
-          }
-        } catch (err) {
-          if (request.signal.aborted) {
-            controller.close();
-            return;
-          }
-          const message =
-            err instanceof CozeApiError
-              ? err.message
-              : err instanceof Error
-                ? err.message
-                : "流式对话失败";
-          send({ type: "error", error: message });
-        } finally {
-          controller.close();
         }
-      },
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "流式对话失败";
+        patchChatProgress(convId, chatId, {
+          status: "error",
+          error: message,
+          reasoning,
+          answer,
+        });
+      }
     });
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
+    return NextResponse.json({
+      data: { conversationId: convId, chatId },
     });
   } catch (error) {
     if (error instanceof CozeApiError) {
