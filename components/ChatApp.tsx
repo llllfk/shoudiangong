@@ -44,7 +44,7 @@ type IngestedDoc = {
 
 type ConfigState = "loading" | "ready" | "missing";
 
-const MAX_PENDING_IMAGES = 9;
+const MAX_PENDING_IMAGES = 20;
 
 /** 等待回复时依次切换，播完最后一条后停住，不循环 */
 const ANALYZING_HINTS = [
@@ -945,7 +945,7 @@ export function ChatApp() {
           </div>
         </aside>
 
-        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--bg)]">
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-[var(--bg)]">
           {errorToast && (
             <div
               className="absolute left-1/2 top-3 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-2 rounded-lg border border-[#ffe2a8] bg-[#fff7e6] px-3.5 py-2 text-[13px] text-[#8a5a00] shadow-[0_4px_14px_rgba(138,90,0,0.12)]"
@@ -958,8 +958,9 @@ export function ChatApp() {
 
           <div
             ref={listRef}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4 sm:px-4"
+            className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-4"
           >
+            <div className="chat-column space-y-3">
             {loadingHistory && (
               <div className="flex items-center justify-center gap-2 py-10 text-[13px] text-[var(--text-sub)]">
                 <div
@@ -989,9 +990,11 @@ export function ChatApp() {
                 {sendHint}
               </div>
             )}
+            </div>
           </div>
 
           <div className="border-t border-[var(--line)] bg-white px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4">
+            <div className="chat-column">
             {shortcuts.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {shortcuts.map((sc) => (
@@ -1160,6 +1163,7 @@ export function ChatApp() {
                 </button>
               )}
             </div>
+            </div>
           </div>
         </main>
       </div>
@@ -1278,14 +1282,34 @@ function stopSpeechPlayback() {
   }
 }
 
+/** 固定优先晓晓；没有时再按自然度回退，不提供手动切换 */
+const VOICE_RANK: Array<{ test: RegExp; score: number }> = [
+  { test: /xiaoxiao|晓晓/i, score: 100 },
+  { test: /xiaoyi|晓伊/i, score: 90 },
+  { test: /yunxi|云希/i, score: 80 },
+  { test: /yunjian|云健/i, score: 70 },
+  { test: /yunyang|云扬/i, score: 60 },
+  { test: /natural|online|neural/i, score: 50 },
+  { test: /yaoyao|瑶瑶/i, score: 20 },
+  { test: /huihui|慧慧/i, score: 5 },
+  { test: /kangkang|康康/i, score: 4 },
+];
+
+function voiceScore(voice: SpeechSynthesisVoice): number {
+  let score = /^zh[-_]?CN/i.test(voice.lang) ? 2 : 0;
+  for (const item of VOICE_RANK) {
+    if (item.test.test(voice.name)) score += item.score;
+  }
+  return score;
+}
+
 function pickZhVoice(): SpeechSynthesisVoice | null {
   if (typeof window === "undefined" || !window.speechSynthesis) return null;
-  const voices = window.speechSynthesis.getVoices();
-  return (
-    voices.find((v) => /zh[-_]?CN/i.test(v.lang)) ||
-    voices.find((v) => /^zh/i.test(v.lang)) ||
-    null
-  );
+  const list = window.speechSynthesis
+    .getVoices()
+    .filter((v) => /^zh/i.test(v.lang));
+  if (list.length === 0) return null;
+  return list.sort((a, b) => voiceScore(b) - voiceScore(a))[0];
 }
 
 function startSpeechPlayback(messageId: string, text: string) {
@@ -1296,9 +1320,13 @@ function startSpeechPlayback(messageId: string, text: string) {
   window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(content);
   utter.lang = "zh-CN";
-  utter.rate = 1;
+  utter.rate = 0.95;
+  utter.pitch = 1;
   const voice = pickZhVoice();
-  if (voice) utter.voice = voice;
+  if (voice) {
+    utter.voice = voice;
+    utter.lang = voice.lang || "zh-CN";
+  }
 
   speakingMessageId = messageId;
   notifySpeechListeners();
@@ -1325,6 +1353,7 @@ function useSpeechPlayback(messageId: string, text: string) {
 
   useEffect(() => {
     setSupported(typeof window.speechSynthesis !== "undefined");
+    window.speechSynthesis?.getVoices();
     const listener: SpeechListener = (id) => setActiveId(id);
     speechListeners.add(listener);
     setActiveId(speakingMessageId);
@@ -1401,9 +1430,11 @@ function MessageBubbleBody({
   const showSpeak = !isUser && supported && speechText.length > 0;
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div
+      className={`msg-row ${isUser ? "justify-end" : "justify-start"}`}
+    >
       <div
-        className={`max-w-[92%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed sm:max-w-[80%] ${
+        className={`msg-bubble rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
           isUser
             ? "bg-[var(--primary-light)] text-white"
             : "border border-[var(--line)] bg-white text-[var(--text-main)] shadow-sm"
@@ -1423,9 +1454,7 @@ function MessageBubbleBody({
           </div>
         )}
         {isUser ? (
-          <pre className="m-0 whitespace-pre-wrap break-words font-sans">
-            {message.content}
-          </pre>
+          <div className="msg-user-text">{message.content}</div>
         ) : (
           <div className="chat-md break-words">
             <ReactMarkdown

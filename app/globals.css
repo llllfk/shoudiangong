@@ -83,6 +83,37 @@ body {
   animation: send-hint-pulse 1.6s ease-in-out infinite;
 }
 
+/* 对话列限制宽度，避免宽屏气泡被拉满；不依赖 Tailwind 任意值 */
+.chat-column {
+  width: 100%;
+  max-width: 48rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.msg-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.msg-bubble {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 92%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.msg-user-text {
+  margin: 0;
+  color: #fff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: inherit;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .status-dot,
   .spinner,
@@ -124,10 +155,26 @@ body {
 }
 
 /* 智能体回复 Markdown */
+/* 聊天气泡：避免 flex + pre 在部分浏览器把用户气泡压成细条 */
+.chat-bubble {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: min(36rem, 92%);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.chat-bubble-user {
+  color: #fff;
+  background: var(--primary-light);
+}
+
 .chat-md {
   font-size: 14px;
   line-height: 1.7;
   color: var(--text-main);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-md > :first-child {
