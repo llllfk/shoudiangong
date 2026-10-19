@@ -21,7 +21,13 @@ import {
   looksLikeDocumentName,
 } from "@/lib/documents";
 import { downloadToLocal } from "@/lib/download";
-import { canSpeak, speakText, stopSpeaking } from "@/lib/speech";
+import {
+  canSpeak,
+  isSpeechAborted,
+  speakText,
+  stopSpeaking,
+  type SpeakPhase,
+} from "@/lib/speech";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
@@ -1256,20 +1262,25 @@ function useSpeechPlayback(
   onSpeechError?: (message: string) => void,
 ) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [phase, setPhase] = useState<SpeakPhase | "idle">("idle");
 
   useEffect(() => {
-    const listener: SpeechListener = (id) => setActiveId(id);
+    const listener: SpeechListener = (id) => {
+      setActiveId(id);
+      if (id !== messageId) setPhase("idle");
+    };
     speechListeners.add(listener);
     setActiveId(speakingMessageId);
     return () => {
       speechListeners.delete(listener);
     };
-  }, []);
+  }, [messageId]);
 
-  const speaking = activeId === messageId;
+  const active = activeId === messageId;
   const toggle = useCallback(() => {
     if (speakingMessageId === messageId) {
       stopSpeechPlayback();
+      setPhase("idle");
       return;
     }
     if (!canSpeak()) {
@@ -1281,9 +1292,14 @@ function useSpeechPlayback(
 
     speakingMessageId = messageId;
     notifySpeechListeners();
+    setPhase("preparing");
 
-    void speakText(content)
+    void speakText(content, (next) => {
+      if (speakingMessageId === messageId) setPhase(next);
+    })
       .catch((err) => {
+        if (isSpeechAborted(err)) return;
+        if (speakingMessageId !== messageId) return;
         const msg =
           err instanceof Error ? err.message : "豆包朗读失败";
         onSpeechError?.(msg);
@@ -1293,10 +1309,16 @@ function useSpeechPlayback(
           speakingMessageId = null;
           notifySpeechListeners();
         }
+        setPhase("idle");
       });
   }, [messageId, onSpeechError, text]);
 
-  return { speaking, toggle };
+  return {
+    active,
+    preparing: active && phase === "preparing",
+    playing: active && phase === "playing",
+    toggle,
+  };
 }
 
 function MessageBubble({
@@ -1342,7 +1364,7 @@ function MessageBubbleBody({
 }) {
   const isUser = message.role === "user";
   const speechText = isUser ? "" : plainTextForSpeech(message.content);
-  const { speaking, toggle } = useSpeechPlayback(
+  const { active, preparing, playing, toggle } = useSpeechPlayback(
     message.id,
     speechText,
     onSpeechError,
@@ -1440,28 +1462,37 @@ function MessageBubbleBody({
             <button
               type="button"
               onClick={toggle}
-              aria-pressed={speaking}
-              className={`speak-btn${speaking ? " is-on" : ""}`}
+              aria-pressed={active}
+              aria-label={
+                preparing ? "正在合成，点击取消" : playing || active ? "结束朗读" : "朗读"
+              }
+              title={
+                preparing ? "正在合成，点击取消" : playing || active ? "结束朗读" : "朗读"
+              }
+              className={`speak-btn${playing || active ? " is-on" : ""}`}
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                aria-hidden="true"
-              >
-                {speaking ? (
-                  <path d="M6 6h4v12H6zM14 6h4v12h-4z" />
-                ) : (
-                  <>
-                    <path d="M11 5L6 9H3v6h3l5 4V5z" />
-                    <path d="M15.5 8.5a4 4 0 010 7M18 6a7 7 0 010 12" />
-                  </>
-                )}
-              </svg>
-              {speaking ? "结束朗读" : "朗读"}
+              {preparing ? (
+                <span className="spinner" aria-hidden="true" />
+              ) : (
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  aria-hidden="true"
+                >
+                  {playing || active ? (
+                    <path d="M6 6h4v12H6zM14 6h4v12h-4z" />
+                  ) : (
+                    <>
+                      <path d="M11 5L6 9H3v6h3l5 4V5z" />
+                      <path d="M15.5 8.5a4 4 0 010 7M18 6a7 7 0 010 12" />
+                    </>
+                  )}
+                </svg>
+              )}
             </button>
           </div>
         )}

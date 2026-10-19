@@ -1,44 +1,61 @@
 /**
- * 朗读仅使用服务端豆包音色（/api/tts）+ Audio 播放，不回退系统/浏览器语音。
+ * 朗读仅使用服务端豆包音色（/api/tts）+ Audio 播放。
  */
 
 /** 扣子 speech input 上限 1024 字节，略留余量 */
 const MAX_TTS_BYTES = 900;
+/** 首段更短，合成返回更快，朗读能尽快开始 */
+const FIRST_TTS_BYTES = 180;
 
 let currentAudio: HTMLAudioElement | null = null;
 let playToken = 0;
+let fetchAbort: AbortController | null = null;
+
+export class SpeechAbortedError extends Error {
+  constructor() {
+    super("ABORTED");
+    this.name = "SpeechAbortedError";
+  }
+}
+
+export function isSpeechAborted(err: unknown): boolean {
+  return (
+    err instanceof SpeechAbortedError ||
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error &&
+      (err.name === "AbortError" || err.message === "ABORTED"))
+  );
+}
 
 function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
-/** 按 UTF-8 字节切分，避免超过接口限制 */
+/** 按 UTF-8 字节切分，避免超过接口限制；首段更短以便尽快出声 */
 export function chunkTextForTts(text: string): string[] {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return [];
-  if (utf8Bytes(normalized) <= MAX_TTS_BYTES) return [normalized];
 
   const chunks: string[] = [];
   let current = "";
   let bytes = 0;
+  let limit = FIRST_TTS_BYTES;
 
   const flush = () => {
     const part = current.trim();
     if (part) chunks.push(part);
     current = "";
     bytes = 0;
+    limit = MAX_TTS_BYTES;
   };
 
   for (const ch of normalized) {
     const size = utf8Bytes(ch);
-    if (bytes + size > MAX_TTS_BYTES && current) {
-      flush();
-    }
+    if (bytes + size > limit && current) flush();
     current += ch;
     bytes += size;
-    if (/[。！？；\n.!?;]/.test(ch) && bytes >= MAX_TTS_BYTES * 0.55) {
-      flush();
-    }
+    const sentenceEnd = /[。！？；\n.!?;]/.test(ch);
+    if (sentenceEnd && bytes >= Math.min(80, limit)) flush();
   }
   flush();
   return chunks;
@@ -48,20 +65,46 @@ export function canSpeak(): boolean {
   return typeof window !== "undefined";
 }
 
+function detachAudio(audio: HTMLAudioElement) {
+  audio.onended = null;
+  audio.onerror = null;
+  audio.onpause = null;
+  try {
+    audio.pause();
+  } catch {
+    // ignore
+  }
+  const src = audio.src;
+  try {
+    audio.removeAttribute("src");
+  } catch {
+    // ignore
+  }
+  if (src.startsWith("blob:")) URL.revokeObjectURL(src);
+}
+
 export async function stopSpeaking(): Promise<void> {
   playToken += 1;
+  if (fetchAbort) {
+    fetchAbort.abort();
+    fetchAbort = null;
+  }
   if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.src = "";
+    const audio = currentAudio;
     currentAudio = null;
+    detachAudio(audio);
   }
 }
 
-async function fetchDoubaoChunk(text: string): Promise<Blob> {
+async function fetchDoubaoChunk(
+  text: string,
+  signal: AbortSignal,
+): Promise<Blob> {
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
+    signal,
   });
   if (!res.ok) {
     let message = "豆包语音合成失败";
@@ -85,21 +128,42 @@ function playBlob(blob: Blob, token: number): Promise<void> {
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     currentAudio = audio;
-    audio.onended = () => {
+
+    const finishOk = () => {
       URL.revokeObjectURL(url);
       if (currentAudio === audio) currentAudio = null;
       resolve();
     };
+
+    audio.onended = finishOk;
     audio.onerror = () => {
       URL.revokeObjectURL(url);
       if (currentAudio === audio) currentAudio = null;
-      reject(new Error("音频播放失败"));
+      // 点「结束」会中断播放，浏览器也会派发 error，不当成失败
+      resolve();
     };
-    void audio.play().catch(reject);
+
+    void audio.play().then(
+      () => undefined,
+      (err: unknown) => {
+        URL.revokeObjectURL(url);
+        if (currentAudio === audio) currentAudio = null;
+        if (token !== playToken || isSpeechAborted(err)) {
+          resolve();
+          return;
+        }
+        reject(err instanceof Error ? err : new Error("音频播放失败"));
+      },
+    );
   });
 }
 
-export async function speakText(text: string): Promise<void> {
+export type SpeakPhase = "preparing" | "playing";
+
+export async function speakText(
+  text: string,
+  onPhase?: (phase: SpeakPhase) => void,
+): Promise<void> {
   const content = text.trim();
   if (!content) return;
 
@@ -109,10 +173,28 @@ export async function speakText(text: string): Promise<void> {
   if (chunks.length === 0) return;
 
   const token = playToken;
-  for (const chunk of chunks) {
-    if (token !== playToken) return;
-    const blob = await fetchDoubaoChunk(chunk);
-    if (token !== playToken) return;
-    await playBlob(blob, token);
+  const ac = new AbortController();
+  fetchAbort = ac;
+
+  try {
+    let next = fetchDoubaoChunk(chunks[0], ac.signal);
+    for (let i = 0; i < chunks.length; i++) {
+      if (token !== playToken) throw new SpeechAbortedError();
+      onPhase?.(i === 0 ? "preparing" : "playing");
+      const blob = await next;
+      if (i + 1 < chunks.length) {
+        next = fetchDoubaoChunk(chunks[i + 1], ac.signal);
+      }
+      if (token !== playToken) throw new SpeechAbortedError();
+      onPhase?.("playing");
+      await playBlob(blob, token);
+    }
+  } catch (err) {
+    if (isSpeechAborted(err) || token !== playToken) {
+      throw new SpeechAbortedError();
+    }
+    throw err;
+  } finally {
+    if (fetchAbort === ac) fetchAbort = null;
   }
 }

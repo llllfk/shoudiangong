@@ -461,19 +461,26 @@
 .speak-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--bg);
   color: var(--primary-light);
-  font-size: 12px;
 }
 
 .speak-btn.is-on {
   border-color: rgba(180, 35, 24, 0.3);
   background: #fef3f2;
   color: #b42318;
+}
+
+.speak-btn .spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
 }
 
 /* ========== 输入区 ========== */
