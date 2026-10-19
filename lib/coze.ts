@@ -445,6 +445,77 @@ export async function uploadFile(file: Blob, filename: string): Promise<string> 
   return fileId;
 }
 
+/** 默认豆包「知性女声」，可用 BOT_VOICE_ID 覆盖 */
+export function getVoiceId(): string {
+  return (
+    env("BOT_VOICE_ID", "TTS_VOICE_ID") || "7468512265134899251"
+  );
+}
+
+/**
+ * 调用扣子语音合成（豆包音色）。
+ * input 单次 UTF-8 最长 1024 字节，调用方需自行分片。
+ */
+export async function synthesizeSpeech(text: string): Promise<{
+  audio: ArrayBuffer;
+  contentType: string;
+}> {
+  const input = text.trim();
+  if (!input) {
+    throw new CozeApiError("朗读文本为空");
+  }
+
+  const res = await fetch(`${API_BASE}/v1/audio/speech`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({
+      input,
+      voice_id: getVoiceId(),
+      response_format: "mp3",
+      speed: 1,
+      sample_rate: 24000,
+    }),
+  });
+
+  const contentType = res.headers.get("content-type") || "";
+  if (!res.ok) {
+    let message = `语音合成失败（HTTP ${res.status}）`;
+    try {
+      const json = (await res.json()) as {
+        msg?: string;
+        message?: string;
+        code?: number;
+      };
+      message = json.msg || json.message || message;
+      throw new CozeApiError(message, res.status, json.code);
+    } catch (err) {
+      if (err instanceof CozeApiError) throw err;
+      throw new CozeApiError(message, res.status);
+    }
+  }
+
+  // 成功时直接返回音频二进制；若误返回 JSON 则按错误处理
+  if (contentType.includes("application/json")) {
+    const json = (await res.json()) as {
+      msg?: string;
+      message?: string;
+      code?: number;
+    };
+    throw new CozeApiError(
+      json.msg || json.message || "语音合成返回异常",
+      res.status,
+      json.code,
+    );
+  }
+
+  return {
+    audio: await res.arrayBuffer(),
+    contentType: contentType.includes("audio")
+      ? contentType
+      : "audio/mpeg",
+  };
+}
+
 export function isCozeConfigured(): boolean {
   return Boolean(env("BOT_PAT", "COZE_PAT") && env("BOT_ID", "COZE_BOT_ID"));
 }

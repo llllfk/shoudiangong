@@ -17,6 +17,7 @@
 - `app/api/history/route.ts`：拉取最近一场消息（刷新恢复）
 - `app/api/config/route.ts`：前端探测是否已配置（不回传密钥）
 - `app/api/shortcuts/route.ts`：快捷指令 + 开场白（自智能体已发布配置读取）
+- `app/api/tts/route.ts`：豆包音色语音合成（`/v1/audio/speech`，服务端代理）
 - `lib/coze.ts` / `lib/db.ts` / `lib/storage.ts` / `lib/history.ts`
 - `components/ChatApp.tsx`：左侧栏 + 对话交互（发文本、发图、展示回复）
 
@@ -33,6 +34,7 @@
 - `BOT_ID`（必填）
 - `BOT_PAT`（必填，严禁写入前端或提交仓库）
 - `BOT_USER_ID`（可选，默认 `competition_user_01`）
+- `BOT_VOICE_ID`（可选，朗读音色；默认豆包「知性女声」；`BOT_PAT` 需含 `createSpeech`）
 - `DATABASE_URL`（对话持久化；平台通常自动注入）
 - 对象存储：代码直接读取平台系统变量 `COZE_BUCKET_ENDPOINT_URL` / `COZE_BUCKET_NAME`（自动注入，无需写入自定义 env）；鉴权用 workload identity
 

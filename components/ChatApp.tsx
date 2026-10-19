@@ -21,6 +21,7 @@ import {
   looksLikeDocumentName,
 } from "@/lib/documents";
 import { downloadToLocal } from "@/lib/download";
+import { canSpeak, speakText, stopSpeaking } from "@/lib/speech";
 import { createId } from "@/lib/utils";
 import type {
   ApiResponse,
@@ -963,6 +964,11 @@ export function ChatApp() {
                   onOpenDocument={openDocument}
                   onDownloadDocument={downloadDocument}
                   busyDocUrl={docBusyUrl}
+                  onSpeechUnsupported={() =>
+                    showError(
+                      "朗读失败。请确认 BOT_PAT 已开通 createSpeech，或稍后重试",
+                    )
+                  }
                 />
               ))}
 
@@ -1236,87 +1242,24 @@ function notifySpeechListeners() {
 }
 
 function stopSpeechPlayback() {
-  if (typeof window !== "undefined" && window.speechSynthesis) {
-    window.speechSynthesis.cancel();
-  }
+  void stopSpeaking();
   if (speakingMessageId != null) {
     speakingMessageId = null;
     notifySpeechListeners();
   }
 }
 
-/** 固定优先晓晓；没有时再按自然度回退，不提供手动切换 */
-const VOICE_RANK: Array<{ test: RegExp; score: number }> = [
-  { test: /xiaoxiao|晓晓/i, score: 100 },
-  { test: /xiaoyi|晓伊/i, score: 90 },
-  { test: /yunxi|云希/i, score: 80 },
-  { test: /yunjian|云健/i, score: 70 },
-  { test: /yunyang|云扬/i, score: 60 },
-  { test: /natural|online|neural/i, score: 50 },
-  { test: /yaoyao|瑶瑶/i, score: 20 },
-  { test: /huihui|慧慧/i, score: 5 },
-  { test: /kangkang|康康/i, score: 4 },
-];
-
-function voiceScore(voice: SpeechSynthesisVoice): number {
-  let score = /^zh[-_]?CN/i.test(voice.lang) ? 2 : 0;
-  for (const item of VOICE_RANK) {
-    if (item.test.test(voice.name)) score += item.score;
-  }
-  return score;
-}
-
-function pickZhVoice(): SpeechSynthesisVoice | null {
-  if (typeof window === "undefined" || !window.speechSynthesis) return null;
-  const list = window.speechSynthesis
-    .getVoices()
-    .filter((v) => /^zh/i.test(v.lang));
-  if (list.length === 0) return null;
-  return list.sort((a, b) => voiceScore(b) - voiceScore(a))[0];
-}
-
-function startSpeechPlayback(messageId: string, text: string) {
-  if (typeof window === "undefined" || !window.speechSynthesis) return;
-  const content = text.trim();
-  if (!content) return;
-
-  window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(content);
-  utter.lang = "zh-CN";
-  utter.rate = 0.95;
-  utter.pitch = 1;
-  const voice = pickZhVoice();
-  if (voice) {
-    utter.voice = voice;
-    utter.lang = voice.lang || "zh-CN";
-  }
-
-  speakingMessageId = messageId;
-  notifySpeechListeners();
-
-  utter.onend = () => {
-    if (speakingMessageId === messageId) {
-      speakingMessageId = null;
-      notifySpeechListeners();
-    }
-  };
-  utter.onerror = () => {
-    if (speakingMessageId === messageId) {
-      speakingMessageId = null;
-      notifySpeechListeners();
-    }
-  };
-
-  window.speechSynthesis.speak(utter);
-}
-
-function useSpeechPlayback(messageId: string, text: string) {
+function useSpeechPlayback(
+  messageId: string,
+  text: string,
+  onUnsupported?: () => void,
+) {
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [supported, setSupported] = useState(false);
 
   useEffect(() => {
-    setSupported(typeof window.speechSynthesis !== "undefined");
-    window.speechSynthesis?.getVoices();
+    if (typeof window !== "undefined") {
+      window.speechSynthesis?.getVoices();
+    }
     const listener: SpeechListener = (id) => setActiveId(id);
     speechListeners.add(listener);
     setActiveId(speakingMessageId);
@@ -1327,15 +1270,35 @@ function useSpeechPlayback(messageId: string, text: string) {
 
   const speaking = activeId === messageId;
   const toggle = useCallback(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
     if (speakingMessageId === messageId) {
       stopSpeechPlayback();
       return;
     }
-    startSpeechPlayback(messageId, text);
-  }, [messageId, text]);
+    if (!canSpeak()) {
+      onUnsupported?.();
+      return;
+    }
+    const content = text.trim();
+    if (!content) return;
 
-  return { speaking, toggle, supported };
+    speakingMessageId = messageId;
+    notifySpeechListeners();
+
+    void speakText(content)
+      .catch((err) => {
+        if (err instanceof Error && err.message === "UNSUPPORTED") {
+          onUnsupported?.();
+        }
+      })
+      .finally(() => {
+        if (speakingMessageId === messageId) {
+          speakingMessageId = null;
+          notifySpeechListeners();
+        }
+      });
+  }, [messageId, onUnsupported, text]);
+
+  return { speaking, toggle };
 }
 
 function MessageBubble({
@@ -1343,11 +1306,13 @@ function MessageBubble({
   onOpenDocument,
   onDownloadDocument,
   busyDocUrl,
+  onSpeechUnsupported,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
   onDownloadDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
+  onSpeechUnsupported?: () => void;
 }) {
   if (message.role === "system") {
     return <div className="msg-system">{message.content}</div>;
@@ -1359,6 +1324,7 @@ function MessageBubble({
       onOpenDocument={onOpenDocument}
       onDownloadDocument={onDownloadDocument}
       busyDocUrl={busyDocUrl}
+      onSpeechUnsupported={onSpeechUnsupported}
     />
   );
 }
@@ -1368,17 +1334,20 @@ function MessageBubbleBody({
   onOpenDocument,
   onDownloadDocument,
   busyDocUrl,
+  onSpeechUnsupported,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
   onDownloadDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
+  onSpeechUnsupported?: () => void;
 }) {
   const isUser = message.role === "user";
   const speechText = isUser ? "" : plainTextForSpeech(message.content);
-  const { speaking, toggle, supported } = useSpeechPlayback(
+  const { speaking, toggle } = useSpeechPlayback(
     message.id,
     speechText,
+    onSpeechUnsupported,
   );
   const previewImages =
     message.imagePreviewUrls && message.imagePreviewUrls.length > 0
@@ -1386,7 +1355,8 @@ function MessageBubbleBody({
       : message.imagePreviewUrl
         ? [message.imagePreviewUrl]
         : [];
-  const showSpeak = !isUser && supported && speechText.length > 0;
+  // 有助手正文就显示朗读按钮；不支持语音的环境点击后再提示
+  const showSpeak = !isUser && speechText.length > 0;
 
   return (
     <div className={`msg-row ${isUser ? "is-user" : "is-assistant"}`}>
