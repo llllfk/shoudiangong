@@ -480,7 +480,24 @@
 }
 
 .think-toggle-label {
+  display: inline-flex;
   min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.think-toggle-label .spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+.think-panel.is-pending .think-toggle {
+  cursor: default;
+}
+
+.think-panel.is-pending .think-body {
+  border-top-color: #d7e2f0;
 }
 
 .think-chevron {

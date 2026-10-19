@@ -125,7 +125,11 @@ export function ChatApp() {
   const [pendingImages, setPendingImages] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
-  const [sendHint, setSendHint] = useState("检修助手处理中…");
+  const [hintLines, setHintLines] = useState<string[]>([]);
+  const hintLinesRef = useRef<string[]>([]);
+  /** 流式推送的模型思维链（与本地等待提示分开） */
+  const [liveReasoning, setLiveReasoning] = useState("");
+  const liveReasoningRef = useRef("");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -155,11 +159,19 @@ export function ChatApp() {
     }
   }, []);
 
-  /** 按顺序切换文案，每条只出现一次，播完停在最后一条 */
+  const setHintStatus = useCallback((line: string) => {
+    const lines = [line];
+    hintLinesRef.current = lines;
+    setHintLines(lines);
+  }, []);
+
+  /** 等待时在思考面板内逐条追加分析提示 */
   const startHintSequence = useCallback(() => {
     stopHintSequence();
     let index = 0;
-    setSendHint(ANALYZING_HINTS[0]);
+    const lines = [ANALYZING_HINTS[0]];
+    hintLinesRef.current = lines;
+    setHintLines(lines);
 
     const tick = () => {
       index += 1;
@@ -167,7 +179,9 @@ export function ChatApp() {
         hintTimerRef.current = null;
         return;
       }
-      setSendHint(ANALYZING_HINTS[index]);
+      const next = [...hintLinesRef.current, ANALYZING_HINTS[index]];
+      hintLinesRef.current = next;
+      setHintLines(next);
       if (index < ANALYZING_HINTS.length - 1) {
         hintTimerRef.current = window.setTimeout(tick, 2800);
       } else {
@@ -418,18 +432,21 @@ export function ChatApp() {
     [loadingHistory, sending, showError],
   );
 
-  /** 快捷指令写入输入框，不自动发送 */
+  /** 快捷指令写入输入框（有文字则追加到后面），不自动发送 */
   const applyShortcut = useCallback(
     (sc: ShortcutCommand) => {
       if (sending || loadingHistory) return;
       const text = (sc.queryTemplate || sc.command || sc.name).trim();
       if (!text) return;
-      setInput(text);
+      setInput((prev) => {
+        const cur = prev.trimEnd();
+        return cur ? `${cur} ${text}` : text;
+      });
       window.setTimeout(() => {
         const el = textInputRef.current;
         if (!el) return;
         el.focus();
-        const len = text.length;
+        const len = el.value.length;
         el.setSelectionRange(len, len);
       }, 0);
     },
@@ -563,7 +580,7 @@ export function ChatApp() {
 
     setSending(true);
     setErrorToast(null);
-    setSendHint(
+    setHintStatus(
       pendingImages.length > 0
         ? "正在压缩并上传照片…"
         : "正在提交检测请求…",
@@ -603,7 +620,7 @@ export function ChatApp() {
       for (let i = 0; i < imageFiles.length; i++) {
         throwIfAborted();
         const imageFile = imageFiles[i];
-        setSendHint(
+        setHintStatus(
           imageFiles.length > 1
             ? `正在上传照片 ${i + 1}/${imageFiles.length}…`
             : "正在上传照片…",
@@ -651,98 +668,216 @@ export function ChatApp() {
       }
 
       throwIfAborted();
-      setSendHint("正在提交检测请求…");
-      const chatRes = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: text || undefined,
-          fileIds: fileIds.length > 0 ? fileIds : undefined,
-          imageUris: imageUris.length > 0 ? imageUris : undefined,
-          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
-          conversationId: conversationIdRef.current || undefined,
-        }),
-        signal: ac.signal,
-      });
-      const chatJson = (await chatRes.json()) as ApiResponse<ChatStartResult>;
-      if (!chatRes.ok || !("data" in chatJson)) {
-        throw new Error(
-          "error" in chatJson ? chatJson.error : "发起对话失败，请重试本轮",
-        );
-      }
+      setHintStatus("正在深度思考…");
+      liveReasoningRef.current = "";
+      setLiveReasoning("");
 
-      const { conversationId, chatId } = chatJson.data;
-      conversationIdRef.current = conversationId;
-      setActiveId(conversationId);
-      activeChatRef.current = { conversationId, chatId };
+      const payload = {
+        text: text || undefined,
+        fileIds: fileIds.length > 0 ? fileIds : undefined,
+        imageUris: imageUris.length > 0 ? imageUris : undefined,
+        imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+        conversationId: conversationIdRef.current || undefined,
+      };
 
-      startHintSequence();
-
-      // 短轮询取结果，避免一次请求挂太久被网关掐成 Failed to fetch
-      const maxPolls = 180;
       let answer = "";
       let reasoning = "";
-      for (let i = 0; i < maxPolls; i++) {
-        throwIfAborted();
-        await new Promise<void>((resolve, reject) => {
-          const t = window.setTimeout(() => {
-            ac.signal.removeEventListener("abort", onAbort);
-            resolve();
-          }, 1000);
-          const onAbort = () => {
-            window.clearTimeout(t);
-            reject(new DOMException("已结束本轮", "AbortError"));
-          };
-          ac.signal.addEventListener("abort", onAbort, { once: true });
+
+      // 优先流式：深度思考模型的 reasoning_content 主要在流式事件里返回
+      try {
+        const streamRes = await fetch("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: ac.signal,
         });
-        throwIfAborted();
-        const statusRes = await fetch(
-          `/api/chat/status?conversationId=${encodeURIComponent(conversationId)}&chatId=${encodeURIComponent(chatId)}`,
-          { signal: ac.signal },
-        );
-        const statusJson =
-          (await statusRes.json()) as ApiResponse<ChatStatusResult>;
-        if (!statusRes.ok || !("data" in statusJson)) {
-          throw new Error(
-            "error" in statusJson
-              ? statusJson.error
-              : "查询对话状态失败，请重试本轮",
-          );
+        if (!streamRes.ok || !streamRes.body) {
+          throw new Error("stream unavailable");
         }
-        const {
-          status,
-          answer: nextAnswer,
-          reasoning: nextReasoning,
-          error,
-        } = statusJson.data;
-        if (status === "completed" && nextAnswer) {
-          answer = nextAnswer;
-          reasoning = nextReasoning?.trim() || "";
-          break;
+
+        const reader = streamRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        while (true) {
+          throwIfAborted();
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let ev: {
+              type?: string;
+              conversationId?: string;
+              chatId?: string;
+              text?: string;
+              answer?: string;
+              reasoning?: string;
+              error?: string;
+            };
+            try {
+              ev = JSON.parse(line) as typeof ev;
+            } catch {
+              continue;
+            }
+
+            if (ev.type === "meta" && ev.conversationId && ev.chatId) {
+              conversationIdRef.current = ev.conversationId;
+              setActiveId(ev.conversationId);
+              activeChatRef.current = {
+                conversationId: ev.conversationId,
+                chatId: ev.chatId,
+              };
+              continue;
+            }
+            if (ev.type === "reasoning" && typeof ev.text === "string") {
+              reasoning = ev.text;
+              liveReasoningRef.current = ev.text;
+              setLiveReasoning(ev.text);
+              continue;
+            }
+            if (ev.type === "answer" && typeof ev.text === "string") {
+              answer = ev.text;
+              continue;
+            }
+            if (ev.type === "done") {
+              if (ev.conversationId) {
+                conversationIdRef.current = ev.conversationId;
+                setActiveId(ev.conversationId);
+              }
+              if (ev.conversationId && ev.chatId) {
+                activeChatRef.current = {
+                  conversationId: ev.conversationId,
+                  chatId: ev.chatId,
+                };
+              }
+              answer = ev.answer || answer;
+              reasoning = (ev.reasoning || reasoning).trim();
+              continue;
+            }
+            if (ev.type === "error") {
+              throw new Error(ev.error || "流式对话失败");
+            }
+          }
         }
-        if (status === "canceled") {
-          throw new DOMException("已结束本轮", "AbortError");
-        }
+      } catch (streamErr) {
         if (
-          status === "failed" ||
-          status === "required_action"
+          (streamErr instanceof DOMException &&
+            streamErr.name === "AbortError") ||
+          (streamErr instanceof Error &&
+            (/abort|已结束本轮/i.test(streamErr.message) ||
+              streamErr.name === "AbortError"))
         ) {
-          throw new Error(error || `对话未正常完成: ${status}`);
+          throw streamErr;
+        }
+        // 流式失败则走轮询；若已有 chatId 不再重复发起
+        if (!answer) {
+          answer = "";
         }
       }
+
+      if (!answer) {
+        let conversationId = activeChatRef.current?.conversationId || "";
+        let chatId = activeChatRef.current?.chatId || "";
+
+        if (!conversationId || !chatId) {
+          setHintStatus("正在提交检测请求…");
+          const chatRes = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: ac.signal,
+          });
+          const chatJson =
+            (await chatRes.json()) as ApiResponse<ChatStartResult>;
+          if (!chatRes.ok || !("data" in chatJson)) {
+            throw new Error(
+              "error" in chatJson
+                ? chatJson.error
+                : "发起对话失败，请重试本轮",
+            );
+          }
+          conversationId = chatJson.data.conversationId;
+          chatId = chatJson.data.chatId;
+          conversationIdRef.current = conversationId;
+          setActiveId(conversationId);
+          activeChatRef.current = { conversationId, chatId };
+        }
+
+        if (!liveReasoningRef.current) {
+          startHintSequence();
+        }
+
+        const maxPolls = 180;
+        for (let i = 0; i < maxPolls; i++) {
+          throwIfAborted();
+          await new Promise<void>((resolve, reject) => {
+            const t = window.setTimeout(() => {
+              ac.signal.removeEventListener("abort", onAbort);
+              resolve();
+            }, 1000);
+            const onAbort = () => {
+              window.clearTimeout(t);
+              reject(new DOMException("已结束本轮", "AbortError"));
+            };
+            ac.signal.addEventListener("abort", onAbort, { once: true });
+          });
+          throwIfAborted();
+          const statusRes = await fetch(
+            `/api/chat/status?conversationId=${encodeURIComponent(conversationId)}&chatId=${encodeURIComponent(chatId)}`,
+            { signal: ac.signal },
+          );
+          const statusJson =
+            (await statusRes.json()) as ApiResponse<ChatStatusResult>;
+          if (!statusRes.ok || !("data" in statusJson)) {
+            throw new Error(
+              "error" in statusJson
+                ? statusJson.error
+                : "查询对话状态失败，请重试本轮",
+            );
+          }
+          const {
+            status,
+            answer: nextAnswer,
+            reasoning: nextReasoning,
+            error,
+          } = statusJson.data;
+          if (status === "completed" && nextAnswer) {
+            answer = nextAnswer;
+            reasoning = nextReasoning?.trim() || reasoning;
+            if (reasoning) {
+              liveReasoningRef.current = reasoning;
+              setLiveReasoning(reasoning);
+            }
+            break;
+          }
+          if (status === "canceled") {
+            throw new DOMException("已结束本轮", "AbortError");
+          }
+          if (status === "failed" || status === "required_action") {
+            throw new Error(error || `对话未正常完成: ${status}`);
+          }
+        }
+      }
+
       if (!answer) {
         throwIfAborted();
         throw new Error("对话超时，请稍后在对话记录中查看或重试本轮");
       }
 
+      stopHintSequence();
+      const thinking = (reasoning || liveReasoningRef.current).trim();
       setMessages((prev) => [
         ...prev,
         {
           id: createId("assistant"),
           role: "assistant",
           content: answer,
-          reasoning: reasoning || undefined,
-          reasoningAutoCollapse: Boolean(reasoning),
+          reasoning: thinking || undefined,
+          reasoningAutoCollapse: Boolean(thinking),
           createdAt: Date.now(),
         },
       ]);
@@ -803,6 +938,10 @@ export function ChatApp() {
       ]);
     } finally {
       stopHintSequence();
+      hintLinesRef.current = [];
+      setHintLines([]);
+      liveReasoningRef.current = "";
+      setLiveReasoning("");
       abortRef.current = null;
       activeChatRef.current = null;
       setSending(false);
@@ -813,6 +952,7 @@ export function ChatApp() {
     pendingImages,
     refreshConversations,
     sending,
+    setHintStatus,
     showError,
     startHintSequence,
     stopHintSequence,
@@ -990,8 +1130,22 @@ export function ChatApp() {
               ))}
 
             {sending && (
-              <div className="send-hint" aria-live="polite">
-                {sendHint}
+              <div className="msg-row is-assistant" aria-live="polite">
+                <div className="msg-bubble">
+                  <ThinkingPanel
+                    text={
+                      liveReasoning.trim()
+                        ? liveReasoning
+                        : hintLines.length > 0
+                          ? hintLines.join("\n")
+                          : "正在分析…"
+                    }
+                    pending
+                    pendingLabel={
+                      liveReasoning.trim() ? "思考中…" : "分析中…"
+                    }
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -1356,43 +1510,74 @@ function MessageBubble({
 function ThinkingPanel({
   text,
   autoCollapse,
+  pending,
+  pendingLabel,
 }: {
   text: string;
   autoCollapse?: boolean;
+  /** 等待回复时展开显示，不可收起 */
+  pending?: boolean;
+  pendingLabel?: string;
 }) {
-  const [open, setOpen] = useState(Boolean(autoCollapse));
+  const [open, setOpen] = useState(Boolean(pending || autoCollapse));
 
   useEffect(() => {
+    if (pending) {
+      setOpen(true);
+      return;
+    }
     if (!autoCollapse) return;
+    setOpen(true);
     const timer = window.setTimeout(() => setOpen(false), 1000);
     return () => window.clearTimeout(timer);
-  }, [autoCollapse]);
+  }, [autoCollapse, pending]);
+
+  const label = pending
+    ? pendingLabel || "思考中…"
+    : open
+      ? "思考过程"
+      : "已完成思考";
 
   return (
-    <div className={`think-panel${open ? " is-open" : ""}`}>
+    <div
+      className={`think-panel${open || pending ? " is-open" : ""}${pending ? " is-pending" : ""}`}
+    >
       <button
         type="button"
         className="think-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open || Boolean(pending)}
+        disabled={pending}
+        onClick={() => {
+          if (pending) return;
+          setOpen((v) => !v);
+        }}
       >
         <span className="think-toggle-label">
-          {open ? "思考过程" : "已完成思考"}
+          {pending ? (
+            <>
+              <span className="spinner" aria-hidden="true" />
+              {label}
+            </>
+          ) : (
+            label
+          )}
         </span>
-        <svg
-          className="think-chevron"
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          aria-hidden="true"
-        >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
+        {!pending && (
+          <svg
+            className="think-chevron"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            aria-hidden="true"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        )}
       </button>
-      {open && (
+      {(open || pending) && (
         <div className="think-body" aria-label="思考过程">
           {text}
         </div>

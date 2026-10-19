@@ -242,8 +242,7 @@ export async function listShortcutCommands(): Promise<ShortcutCommandInfo[]> {
   return shortcuts;
 }
 
-/** 仅发起对话，立即返回 id，由前端短轮询取结果（避免长连接被网关掐断） */
-export async function createChat(options: {
+export type ChatCreateOptions = {
   text?: string;
   imageUrl?: string;
   imageUrls?: string[];
@@ -251,7 +250,12 @@ export async function createChat(options: {
   fileIds?: string[];
   conversationId?: string;
   shortcutCommandId?: string;
-}): Promise<ChatStartResult> {
+};
+
+function buildChatRequest(
+  options: ChatCreateOptions,
+  stream: boolean,
+): { url: string; body: Record<string, unknown> } {
   const {
     text,
     imageUrl,
@@ -274,7 +278,7 @@ export async function createChat(options: {
   const body: Record<string, unknown> = {
     bot_id: getBotId(),
     user_id: getUserId(),
-    stream: false,
+    stream,
     auto_save_history: true,
   };
 
@@ -294,6 +298,14 @@ export async function createChat(options: {
   if (conversationId) {
     url += `?conversation_id=${encodeURIComponent(conversationId)}`;
   }
+  return { url, body };
+}
+
+/** 仅发起对话，立即返回 id，由前端短轮询取结果（避免长连接被网关掐断） */
+export async function createChat(
+  options: ChatCreateOptions,
+): Promise<ChatStartResult> {
+  const { url, body } = buildChatRequest(options, false);
 
   const createRes = await fetch(url, {
     method: "POST",
@@ -320,6 +332,179 @@ export async function createChat(options: {
   }
 
   return { conversationId: convId, chatId };
+}
+
+/** 发起流式对话（用于实时拿到 reasoning_content） */
+export async function createChatStreamResponse(
+  options: ChatCreateOptions,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const { url, body } = buildChatRequest(options, true);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...authHeaders(true),
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const errJson = await parseJson(res);
+    const err = errJson as { msg?: string; message?: string; code?: number };
+    throw new CozeApiError(
+      err.msg || err.message || `发起流式对话失败（HTTP ${res.status}）`,
+      res.status,
+      err.code,
+    );
+  }
+  if (!res.body) {
+    throw new CozeApiError("流式对话未返回内容");
+  }
+  return res;
+}
+
+export type CozeStreamPiece =
+  | { kind: "meta"; conversationId: string; chatId: string }
+  | { kind: "reasoning_delta"; text: string }
+  | { kind: "answer_delta"; text: string }
+  | { kind: "done"; conversationId: string; chatId: string }
+  | { kind: "error"; message: string };
+
+/** 解析扣子 SSE，抽出思维链与回复增量 */
+export async function* iterateCozeChatStream(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<CozeStreamPiece> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let conversationId = "";
+  let chatId = "";
+  let metaSent = false;
+
+  const emitMeta = function* (): Generator<CozeStreamPiece> {
+    if (!metaSent && conversationId && chatId) {
+      metaSent = true;
+      yield { kind: "meta", conversationId, chatId };
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) >= 0) {
+        const rawEvent = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+
+        let eventName = "";
+        const dataLines: string[] = [];
+        for (const line of rawEvent.split("\n")) {
+          if (line.startsWith("event:")) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trim());
+          }
+        }
+        const dataStr = dataLines.join("\n");
+        if (!dataStr || dataStr === "[DONE]") {
+          if (conversationId && chatId) {
+            yield* emitMeta();
+            yield { kind: "done", conversationId, chatId };
+          }
+          continue;
+        }
+
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(dataStr) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+
+        const conv =
+          typeof data.conversation_id === "string" ? data.conversation_id : "";
+        const id = typeof data.id === "string" ? data.id : "";
+        const msgChatId =
+          typeof data.chat_id === "string" ? data.chat_id : "";
+
+        if (
+          eventName === "conversation.chat.created" ||
+          eventName === "conversation.chat.in_progress"
+        ) {
+          if (conv) conversationId = conv;
+          if (id) chatId = id;
+          yield* emitMeta();
+          continue;
+        }
+
+        if (
+          eventName === "conversation.chat.failed" ||
+          eventName === "error"
+        ) {
+          const lastError = data.last_error as
+            | { msg?: string; message?: string }
+            | undefined;
+          yield {
+            kind: "error",
+            message:
+              lastError?.msg ||
+              lastError?.message ||
+              (typeof data.msg === "string" ? data.msg : "") ||
+              "流式对话失败",
+          };
+          continue;
+        }
+
+        if (
+          eventName === "conversation.message.delta" ||
+          eventName === "conversation.message.completed"
+        ) {
+          if (conv) conversationId = conv;
+          if (msgChatId) chatId = msgChatId;
+          yield* emitMeta();
+
+          const msgType = typeof data.type === "string" ? data.type : "";
+          const reasoning =
+            typeof data.reasoning_content === "string"
+              ? data.reasoning_content
+              : typeof data.reasoningContent === "string"
+                ? data.reasoningContent
+                : "";
+          const content =
+            typeof data.content === "string" ? data.content : "";
+
+          // delta 事件给增量；completed 可能是全文，避免重复追加
+          if (eventName === "conversation.message.delta") {
+            if (reasoning) {
+              yield { kind: "reasoning_delta", text: reasoning };
+            }
+            if (msgType === "answer" && content) {
+              yield { kind: "answer_delta", text: content };
+            }
+          }
+          continue;
+        }
+
+        if (eventName === "conversation.chat.completed") {
+          if (conv) conversationId = conv;
+          if (id) chatId = id;
+          yield* emitMeta();
+          yield { kind: "done", conversationId, chatId };
+        }
+      }
+    }
+
+    if (conversationId && chatId) {
+      yield* emitMeta();
+      yield { kind: "done", conversationId, chatId };
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /** 取消进行中的对话（需 PAT 具备 cancelChat 权限） */
@@ -403,6 +588,7 @@ export async function listChatAnswer(
     type?: string;
     content?: string;
     reasoning_content?: string;
+    reasoningContent?: string;
   }> = [];
   if (Array.isArray(listPayload.data)) {
     messages = listPayload.data as typeof messages;
@@ -419,15 +605,16 @@ export async function listChatAnswer(
   const answerParts: string[] = [];
   const reasoningParts: string[] = [];
   for (const m of messages) {
+    const reasoningRaw =
+      (typeof m.reasoning_content === "string" && m.reasoning_content) ||
+      (typeof m.reasoningContent === "string" && m.reasoningContent) ||
+      "";
+    if (reasoningRaw.trim()) {
+      reasoningParts.push(reasoningRaw.trim());
+    }
     if (m?.type !== "answer") continue;
     if (typeof m.content === "string" && m.content) {
       answerParts.push(m.content);
-    }
-    if (
-      typeof m.reasoning_content === "string" &&
-      m.reasoning_content.trim()
-    ) {
-      reasoningParts.push(m.reasoning_content.trim());
     }
   }
 
