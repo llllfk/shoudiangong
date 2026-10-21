@@ -6,6 +6,7 @@ import {
   displayDocName,
 } from "@/lib/documents";
 import { downloadToLocal } from "@/lib/download";
+import { PdfCanvasViewer } from "@/components/PdfCanvasViewer";
 
 export type DocViewerState = {
   title: string;
@@ -13,6 +14,12 @@ export type DocViewerState = {
   contentType: string;
   filename: string;
 };
+
+function isPdfDoc(contentType: string, filename: string): boolean {
+  const ct = contentType.toLowerCase();
+  if (ct.includes("pdf")) return true;
+  return /\.pdf$/i.test(filename);
+}
 
 export function DocumentViewer({
   doc,
@@ -22,7 +29,9 @@ export function DocumentViewer({
   onClose: () => void;
 }) {
   const name = displayDocName(doc.title, doc.filename);
-  const canPreview = canInlinePreview(doc.contentType, doc.filename);
+  const pdf = isPdfDoc(doc.contentType, name);
+  const textPreview =
+    !pdf && canInlinePreview(doc.contentType, doc.filename);
 
   const [downloading, setDownloading] = useState(false);
   const [downloadHint, setDownloadHint] = useState<string | null>(null);
@@ -72,7 +81,9 @@ export function DocumentViewer({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col bg-[#f3f5f8]">
-        {canPreview ? (
+        {pdf ? (
+          <PdfCanvasViewer src={doc.viewPath} title={name} />
+        ) : textPreview ? (
           <iframe
             title={name}
             src={doc.viewPath}

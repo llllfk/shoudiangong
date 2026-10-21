@@ -20,7 +20,6 @@ import {
   isDocumentUrl,
   looksLikeDocumentName,
 } from "@/lib/documents";
-import { downloadToLocal } from "@/lib/download";
 import {
   canSpeak,
   isSpeechAborted,
@@ -332,25 +331,6 @@ export function ChatApp() {
         });
       } catch (err) {
         showError(err instanceof Error ? err.message : "无法打开文档");
-      } finally {
-        setDocBusyUrl(null);
-      }
-    },
-    [docCache, ingestDocument, showError],
-  );
-
-  const downloadDocument = useCallback(
-    async (url: string, title?: string) => {
-      setDocBusyUrl(url);
-      try {
-        const doc =
-          docCache[url] || (await ingestDocument(url, title));
-        if (!doc) {
-          throw new Error("文档处理中，请稍后再试");
-        }
-        await downloadToLocal(doc.viewPath, doc.filename);
-      } catch (err) {
-        showError(err instanceof Error ? err.message : "下载失败");
       } finally {
         setDocBusyUrl(null);
       }
@@ -1149,7 +1129,6 @@ export function ChatApp() {
                   key={m.id}
                   message={m}
                   onOpenDocument={openDocument}
-                  onDownloadDocument={downloadDocument}
                   busyDocUrl={docBusyUrl}
                   onSpeechError={(msg) =>
                     showError(
@@ -1518,13 +1497,11 @@ function useSpeechPlayback(
 function MessageBubble({
   message,
   onOpenDocument,
-  onDownloadDocument,
   busyDocUrl,
   onSpeechError,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
-  onDownloadDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
   onSpeechError?: (message: string) => void;
 }) {
@@ -1536,7 +1513,6 @@ function MessageBubble({
     <MessageBubbleBody
       message={message}
       onOpenDocument={onOpenDocument}
-      onDownloadDocument={onDownloadDocument}
       busyDocUrl={busyDocUrl}
       onSpeechError={onSpeechError}
     />
@@ -1636,13 +1612,11 @@ function ThinkingPanel({
 function MessageBubbleBody({
   message,
   onOpenDocument,
-  onDownloadDocument,
   busyDocUrl,
   onSpeechError,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
-  onDownloadDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
   onSpeechError?: (message: string) => void;
 }) {
@@ -1708,39 +1682,17 @@ function MessageBubbleBody({
                     );
                     const busy = Boolean(url && busyDocUrl === url);
 
-                    if (isDoc && (onOpenDocument || onDownloadDocument)) {
+                    // 点击文档链接 → 应用内预览；下载放在预览顶栏，避免手机误点直接下载
+                    if (isDoc && onOpenDocument) {
                       return (
-                        <span
-                          style={{
-                            display: "inline-flex",
-                            flexWrap: "wrap",
-                            gap: "4px 8px",
-                            alignItems: "baseline",
-                          }}
+                        <button
+                          type="button"
+                          onClick={() => void onOpenDocument(url, label)}
+                          disabled={busy}
+                          className="doc-link"
                         >
-                          {onOpenDocument && (
-                            <button
-                              type="button"
-                              onClick={() => void onOpenDocument(url, label)}
-                              disabled={busy}
-                              className="doc-link"
-                            >
-                              {busy ? `处理中「${label}」…` : children}
-                            </button>
-                          )}
-                          {onDownloadDocument && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void onDownloadDocument(url, label)
-                              }
-                              disabled={busy}
-                              className="doc-download"
-                            >
-                              下载到本地
-                            </button>
-                          )}
-                        </span>
+                          {busy ? `处理中「${label}」…` : children}
+                        </button>
                       );
                     }
 

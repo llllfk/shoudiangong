@@ -26,13 +26,27 @@ export async function GET(request: NextRequest) {
     const obj = await getObjectBytes(uri);
     const filename = (obj.filename || "document").replace(/[\\"\r\n]/g, "_");
     const bytes = new Uint8Array(obj.body);
-    const disposition = asDownload ? "attachment" : "inline";
+
+    // 按扩展名纠正 MIME，避免上游 octet-stream 导致手机直接下载
+    let contentType = obj.contentType || "application/octet-stream";
+    if (/\.pdf$/i.test(filename) || contentType.toLowerCase().includes("pdf")) {
+      contentType = "application/pdf";
+    } else if (/\.txt$/i.test(filename)) {
+      contentType = "text/plain; charset=utf-8";
+    } else if (/\.csv$/i.test(filename)) {
+      contentType = "text/csv; charset=utf-8";
+    }
+
+    // 预览用纯 inline（不带 filename），减少 WebView 把响应当成附件下载
+    const disposition = asDownload
+      ? `attachment; filename="${filename}"`
+      : "inline";
 
     return new NextResponse(bytes, {
       status: 200,
       headers: {
-        "Content-Type": obj.contentType,
-        "Content-Disposition": `${disposition}; filename="${filename}"`,
+        "Content-Type": contentType,
+        "Content-Disposition": disposition,
         "Cache-Control": "private, max-age=300",
         "Content-Length": String(bytes.byteLength),
         "X-Content-Type-Options": "nosniff",

@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const contentType =
+    let contentType =
       upstream.headers.get("content-type") || "application/octet-stream";
     const buf = Buffer.from(await upstream.arrayBuffer());
     if (buf.byteLength === 0) {
@@ -64,6 +64,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const filename =
+      (typeof body.filename === "string" && body.filename.trim()) ||
+      guessFilenameFromUrl(url);
+
+    // 文件名是 .pdf 时强制正确 MIME，避免手机端当成附件下载
+    if (/\.pdf$/i.test(filename) || contentType.toLowerCase().includes("pdf")) {
+      contentType = "application/pdf";
+    }
+
     // URL 无扩展名时，用 Content-Type 再校验一轮
     if (!isDocumentUrl(url) && !isDocumentContentType(contentType)) {
       return NextResponse.json(
@@ -71,10 +80,6 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
-
-    const filename =
-      (typeof body.filename === "string" && body.filename.trim()) ||
-      guessFilenameFromUrl(url);
 
     const uploaded = await uploadObject(buf, {
       contentType,
