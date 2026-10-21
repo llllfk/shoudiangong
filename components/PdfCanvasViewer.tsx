@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * 用 pdf.js 画布渲染 PDF，避免手机 / WebView 对 iframe PDF 直接触发下载。
+ * 按 devicePixelRatio 提高像素密度，避免手机端发糊。
  */
 export function PdfCanvasViewer({
   src,
@@ -40,27 +41,35 @@ export function PdfCanvasViewer({
         const pdf = await pdfjs.getDocument({ data }).promise;
         if (cancelled) return;
 
-        const maxW = Math.max(host.clientWidth || window.innerWidth - 24, 280);
+        // 物理像素：手机常见 2x/3x，不乘 DPR 会发糊
+        const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+        const cssWidth = Math.max(
+          host.clientWidth || window.innerWidth - 24,
+          280,
+        );
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const page = await pdf.getPage(pageNum);
           if (cancelled) return;
 
           const base = page.getViewport({ scale: 1 });
-          const scale = Math.min(2, maxW / base.width);
-          const viewport = page.getViewport({ scale });
+          // 先按屏宽适配，再乘 DPR 提高清晰度
+          const fitScale = cssWidth / base.width;
+          const viewport = page.getViewport({ scale: fitScale * dpr });
 
           const canvas = document.createElement("canvas");
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          canvas.style.width = "100%";
-          canvas.style.height = "auto";
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+          // CSS 尺寸用逻辑像素，浏览器再缩放到屏宽
+          canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
+          canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
+          canvas.style.maxWidth = "100%";
           canvas.style.display = "block";
-          canvas.style.marginBottom = "10px";
+          canvas.style.margin = "0 auto 10px";
           canvas.style.background = "#fff";
           canvas.setAttribute("aria-label", `${title} 第 ${pageNum} 页`);
 
-          const ctx = canvas.getContext("2d");
+          const ctx = canvas.getContext("2d", { alpha: false });
           if (!ctx) throw new Error("无法创建画布");
 
           host.appendChild(canvas);
