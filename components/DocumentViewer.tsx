@@ -1,13 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import {
-  canDocxPreview,
   canInlinePreview,
   displayDocName,
 } from "@/lib/documents";
 import { downloadToLocal } from "@/lib/download";
-import type { ApiResponse } from "@/types";
 
 export type DocViewerState = {
   title: string;
@@ -15,17 +13,6 @@ export type DocViewerState = {
   contentType: string;
   filename: string;
 };
-
-function uriFromViewPath(viewPath: string): string | null {
-  try {
-    const q = viewPath.includes("?")
-      ? viewPath.slice(viewPath.indexOf("?") + 1)
-      : "";
-    return new URLSearchParams(q).get("uri");
-  } catch {
-    return null;
-  }
-}
 
 export function DocumentViewer({
   doc,
@@ -35,15 +22,11 @@ export function DocumentViewer({
   onClose: () => void;
 }) {
   const name = displayDocName(doc.title, doc.filename);
-  const pdfOrText = canInlinePreview(doc.contentType, doc.filename);
-  const isDocx = canDocxPreview(doc.contentType, name);
-  const docUri = useMemo(() => uriFromViewPath(doc.viewPath), [doc.viewPath]);
+  const canPreview = canInlinePreview(doc.contentType, doc.filename);
 
-  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
-  const [previewing, setPreviewing] = useState(isDocx);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadHint, setDownloadHint] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const handleDownload = useCallback(async () => {
     setDownloading(true);
@@ -59,55 +42,6 @@ export function DocumentViewer({
       setDownloading(false);
     }
   }, [doc.viewPath, name]);
-
-  // Word：用临时签名链接 + Office 在线预览（不依赖 mammoth）
-  useEffect(() => {
-    if (!isDocx || pdfOrText) return;
-    if (!docUri) {
-      setLoadError("缺少文档标识，无法预览");
-      setPreviewing(false);
-      return;
-    }
-
-    let cancelled = false;
-    setPreviewing(true);
-    setLoadError(null);
-    setEmbedUrl(null);
-
-    (async () => {
-      try {
-        const qs = new URLSearchParams({
-          uri: docUri,
-          filename: name,
-        });
-        const res = await fetch(`/api/documents/office-embed?${qs}`);
-        const json = (await res.json()) as ApiResponse<{ embedUrl: string }>;
-        if (!res.ok || !("data" in json)) {
-          throw new Error(
-            "error" in json ? json.error : "无法生成预览，请下载到本地查看",
-          );
-        }
-        if (cancelled) return;
-        setEmbedUrl(json.data.embedUrl);
-      } catch (err) {
-        if (!cancelled) {
-          setLoadError(
-            err instanceof Error
-              ? err.message
-              : "无法生成预览，请下载到本地查看",
-          );
-        }
-      } finally {
-        if (!cancelled) setPreviewing(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [docUri, isDocx, name, pdfOrText]);
-
-  const showFallback = !pdfOrText && !isDocx;
 
   return (
     <div
@@ -138,48 +72,20 @@ export function DocumentViewer({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col bg-[#f3f5f8]">
-        {pdfOrText ? (
+        {canPreview ? (
           <iframe
             title={name}
             src={doc.viewPath}
             className="h-full w-full border-0 bg-white"
           />
-        ) : isDocx ? (
-          <div className="flex min-h-0 flex-1 flex-col bg-white">
-            {previewing && (
-              <p className="px-6 py-8 text-[13px] text-[var(--primary-light)]">
-                正在加载预览…
-              </p>
-            )}
-            {loadError && (
-              <div className="m-auto max-w-md px-6 py-10 text-center">
-                <p className="text-[13px] text-[#b42318]">{loadError}</p>
-                <button
-                  type="button"
-                  onClick={() => void handleDownload()}
-                  disabled={downloading}
-                  className="mt-5 inline-flex rounded-lg bg-[var(--primary-light)] px-4 py-2.5 text-sm text-white disabled:opacity-50"
-                >
-                  {downloading ? "下载中…" : "下载到本地"}
-                </button>
-              </div>
-            )}
-            {embedUrl && (
-              <iframe
-                title={name}
-                src={embedUrl}
-                className="h-full w-full flex-1 border-0 bg-white"
-                allow="fullscreen"
-              />
-            )}
-          </div>
         ) : (
           <div className="m-auto max-w-md px-6 text-center">
             <p className="text-[15px] font-medium text-[var(--text-main)]">
               {name}
             </p>
             <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-sub)]">
-              该格式暂不支持页面内预览。请下载到本地后用对应软件打开，不会跳转外部浏览器。
+              当前格式无法在应用内预览。建议智能体输出 PDF
+              报告，即可直接在页面内查看；也可先下载到本地打开。
             </p>
             {downloadHint && (
               <p className="mt-4 text-[13px] text-[var(--accent)]">
@@ -200,12 +106,6 @@ export function DocumentViewer({
           </div>
         )}
       </div>
-
-      {showFallback && downloadHint && (
-        <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 rounded-md bg-[#12305c] px-3 py-1.5 text-[12px] text-white">
-          {downloadHint}
-        </div>
-      )}
     </div>
   );
 }

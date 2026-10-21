@@ -65,19 +65,12 @@ export function guessFilenameFromUrl(url: string): string {
   }
 }
 
+/** PDF / 纯文本可在应用内 iframe 直接预览，无需 Office。 */
 export function canInlinePreview(contentType: string, filename?: string): boolean {
   const ct = contentType.toLowerCase();
   if (ct.includes("pdf") || ct.startsWith("text/")) return true;
   if (filename && /\.pdf$/i.test(filename)) return true;
   if (filename && /\.(txt|csv)$/i.test(filename)) return true;
-  return false;
-}
-
-/** Word（docx）可在应用内转 HTML 预览 */
-export function canDocxPreview(contentType: string, filename?: string): boolean {
-  const ct = contentType.toLowerCase();
-  if (ct.includes("wordprocessingml") || ct.includes("msword")) return true;
-  if (filename && /\.docx?$/i.test(filename)) return true;
   return false;
 }
 

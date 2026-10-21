@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     if (!isDocumentUrl(url) && !body.filename) {
       // 仍允许显式指定文件名时拉取（部分短链无扩展名）
       return NextResponse.json(
-        { error: "仅支持文档类链接（如 PDF/Office）" },
+        { error: "仅支持文档类链接（如 PDF）" },
         { status: 400 },
       );
     }
