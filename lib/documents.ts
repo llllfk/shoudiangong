@@ -31,8 +31,14 @@ export function isDocumentContentType(contentType: string | null | undefined): b
   return DOC_CONTENT_TYPES.some((p) => ct === p || ct.startsWith(p));
 }
 
+/** 是否是可读的短文件名（排除整段 URL，避免下载时以链接当文件名） */
 export function looksLikeDocumentName(name: string): boolean {
-  return DOC_EXT.test(name.trim());
+  const t = name.trim();
+  if (!t || t.length > 120) return false;
+  if (/^https?:\/\//i.test(t) || t.includes("://")) return false;
+  // 路径/查询串不是「文件名」
+  if (/[\/\\?]/.test(t)) return false;
+  return DOC_EXT.test(t);
 }
 
 export function extractDocumentUrls(markdown: string): string[] {
@@ -59,10 +65,33 @@ export function guessFilenameFromUrl(url: string): string {
   try {
     const u = new URL(url);
     const base = u.pathname.split("/").filter(Boolean).pop() || "document";
-    return decodeURIComponent(base).slice(0, 180);
+    const decoded = decodeURIComponent(base).replace(/[\\"\r\n]/g, "_");
+    // 无扩展名时按 pdf 兜底（平台签名链常见）
+    if (!DOC_EXT.test(decoded)) return `${decoded.slice(0, 160)}.pdf`;
+    return decoded.slice(0, 180);
   } catch {
-    return "document";
+    return "document.pdf";
   }
+}
+
+/** 下载/展示用的安全文件名，绝不使用整段 URL */
+export function safeDocumentFilename(
+  preferred?: string | null,
+  sourceUrl?: string,
+  fallback = "document.pdf",
+): string {
+  const raw = preferred?.trim() || "";
+  if (raw && looksLikeDocumentName(raw)) {
+    return raw.replace(/[\\"\r\n]/g, "_").slice(0, 120);
+  }
+  // preferred 其实是 URL 时，从中取路径末段
+  if (raw && /^https?:\/\//i.test(raw)) {
+    return guessFilenameFromUrl(raw);
+  }
+  if (sourceUrl) {
+    return guessFilenameFromUrl(sourceUrl);
+  }
+  return fallback;
 }
 
 /** PDF / 纯文本可在应用内 iframe 直接预览，无需 Office。 */
@@ -76,8 +105,19 @@ export function canInlinePreview(contentType: string, filename?: string): boolea
 
 export function displayDocName(title?: string, filename?: string): string {
   const t = title?.trim();
-  if (t && !/^[0-9a-f-]{20,}\./i.test(t)) return t;
+  if (t && looksLikeDocumentName(t)) return t;
+  // 可读标题（非 URL、非超长 UUID 文件名）
+  if (
+    t &&
+    !/^https?:\/\//i.test(t) &&
+    !/[\/\\?]/.test(t) &&
+    !/^[0-9a-f-]{20,}\./i.test(t) &&
+    t.length <= 80
+  ) {
+    return t;
+  }
   const f = filename?.trim();
-  if (f) return f;
+  if (f && looksLikeDocumentName(f)) return f;
+  if (f && !/^https?:\/\//i.test(f) && !/[\/\\?]/.test(f)) return f;
   return "文档";
 }

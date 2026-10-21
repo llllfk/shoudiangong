@@ -24,13 +24,26 @@ export async function GET(request: NextRequest) {
       request.nextUrl.searchParams.get("download") === "true";
 
     const obj = await getObjectBytes(uri);
-    const filename = (obj.filename || "document").replace(/[\\"\r\n]/g, "_");
     const bytes = new Uint8Array(obj.body);
+
+    // 客户端可传可读文件名；拒绝把整段 URL 当成文件名
+    const requested = request.nextUrl.searchParams.get("filename")?.trim() || "";
+    const fromStorage = (obj.filename || "document").replace(/[\\"\r\n]/g, "_");
+    let filename = fromStorage;
+    if (
+      requested &&
+      !/^https?:\/\//i.test(requested) &&
+      !/[\/\\?]/.test(requested) &&
+      requested.length <= 120
+    ) {
+      filename = requested.replace(/[\\"\r\n]/g, "_");
+    }
 
     // 按扩展名纠正 MIME，避免上游 octet-stream 导致手机直接下载
     let contentType = obj.contentType || "application/octet-stream";
     if (/\.pdf$/i.test(filename) || contentType.toLowerCase().includes("pdf")) {
       contentType = "application/pdf";
+      if (!/\.pdf$/i.test(filename)) filename = `${filename}.pdf`;
     } else if (/\.txt$/i.test(filename)) {
       contentType = "text/plain; charset=utf-8";
     } else if (/\.csv$/i.test(filename)) {

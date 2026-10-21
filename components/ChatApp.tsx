@@ -16,9 +16,9 @@ import {
 import { compressImageFile } from "@/lib/compress-image";
 import {
   extractDocumentUrls,
-  guessFilenameFromUrl,
   isDocumentUrl,
   looksLikeDocumentName,
+  safeDocumentFilename,
 } from "@/lib/documents";
 import {
   canSpeak,
@@ -286,10 +286,7 @@ export function ChatApp() {
       if (ingestingRef.current.has(url)) return null;
       ingestingRef.current.add(url);
       try {
-        const filename =
-          (preferredName && looksLikeDocumentName(preferredName)
-            ? preferredName.trim()
-            : "") || guessFilenameFromUrl(url);
+        const filename = safeDocumentFilename(preferredName, url);
         const res = await fetch("/api/documents/ingest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -320,9 +317,7 @@ export function ChatApp() {
         if (!doc) {
           throw new Error("文档处理中，请稍后再试");
         }
-        const niceName =
-          (title && looksLikeDocumentName(title) ? title.trim() : "") ||
-          doc.filename;
+        const niceName = safeDocumentFilename(title, url, doc.filename);
         setDocViewer({
           title: niceName,
           viewPath: doc.viewPath,
