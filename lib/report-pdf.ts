@@ -44,9 +44,11 @@ export async function buildInspectionReportPdf(
   const fontPath = resolveFontPath();
 
   return new Promise((resolve, reject) => {
+    // 默认用中文字体，避免加载 Helvetica（pdfkit 0.20 + pnpm 会报 #standard-fonts）
     const doc = new PDFDocument({
       size: "A4",
       bufferPages: true,
+      font: fontPath,
       margins: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN },
       info: {
         Title: report.title,
