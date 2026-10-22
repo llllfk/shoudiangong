@@ -21,6 +21,7 @@
     "@capacitor/core": "^8.5.2",
     "next": "^15.0.0",
     "pdfjs-dist": "^4.10.38",
+    "pdfkit": "^0.20.2",
     "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -30,6 +31,7 @@
   "devDependencies": {
     "@capacitor/cli": "^8.5.3",
     "@types/node": "^22.0.0",
+    "@types/pdfkit": "^0.17.7",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

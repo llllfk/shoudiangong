@@ -1,0 +1,263 @@
+import fs from "fs";
+import path from "path";
+import PDFDocument from "pdfkit";
+import type { InspectionReport } from "@/lib/report-types";
+
+const PAGE_W = 595.28; // A4
+const PAGE_H = 841.89;
+const MARGIN = 36;
+const CONTENT_W = PAGE_W - MARGIN * 2;
+const PRIMARY = "#0B1E3A";
+const ACCENT = "#12305C";
+const LINE = "#C5CDD8";
+const MUTED = "#5A6A7A";
+const DANGER = "#B42318";
+
+function resolveFontPath(): string {
+  const bundled = path.join(process.cwd(), "assets", "fonts", "ReportCJK.ttf");
+  if (fs.existsSync(bundled)) return bundled;
+  const win = [
+    "C:\\Windows\\Fonts\\simhei.ttf",
+    "C:\\Windows\\Fonts\\msyh.ttf",
+    "C:\\Windows\\Fonts\\simsun.ttc",
+  ];
+  for (const p of win) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error("缺少中文字体：请将 ReportCJK.ttf 放到 assets/fonts/");
+}
+
+function cellText(v: string | number | null | undefined): string {
+  if (v === null || v === undefined) return "";
+  return String(v).trim();
+}
+
+/** 按报告 JSON 生成 A4 PDF（Buffer） */
+export async function buildInspectionReportPdf(
+  report: InspectionReport,
+): Promise<Buffer> {
+  const fontPath = resolveFontPath();
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: "A4",
+      bufferPages: true,
+      margins: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN },
+      info: {
+        Title: report.title,
+        Author: "受电弓智能检修系统",
+      },
+    });
+
+    const chunks: Buffer[] = [];
+    doc.on("data", (c: Buffer) => chunks.push(c));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    doc.font(fontPath);
+
+    // 顶栏
+    doc.rect(0, 0, PAGE_W, 52).fill(PRIMARY);
+    doc.fillColor("#FFFFFF").fontSize(14);
+    doc.text(report.title, MARGIN, 18, {
+      width: CONTENT_W,
+      align: "center",
+    });
+
+    let y = 68;
+
+    const ensureSpace = (need: number) => {
+      if (y + need > PAGE_H - MARGIN) {
+        doc.addPage();
+        y = MARGIN;
+      }
+    };
+
+    const sectionTitle = (text: string) => {
+      ensureSpace(28);
+      doc.fillColor(ACCENT).fontSize(12).text(text, MARGIN, y, {
+        width: CONTENT_W,
+      });
+      y = doc.y + 6;
+      doc
+        .strokeColor(PRIMARY)
+        .lineWidth(1)
+        .moveTo(MARGIN, y)
+        .lineTo(MARGIN + CONTENT_W, y)
+        .stroke();
+      y += 10;
+    };
+
+    const subTitle = (text: string) => {
+      ensureSpace(22);
+      doc.fillColor(PRIMARY).fontSize(10.5).text(text, MARGIN, y, {
+        width: CONTENT_W,
+      });
+      y = doc.y + 6;
+    };
+
+    const bodyText = (text: string) => {
+      if (!text.trim()) return;
+      ensureSpace(40);
+      doc.fillColor("#1A2332").fontSize(9).text(text, MARGIN, y, {
+        width: CONTENT_W,
+        lineGap: 2,
+      });
+      y = doc.y + 8;
+    };
+
+    // —— 一、机械组 ——
+    sectionTitle("一、机械组（受电弓机械外观检修）");
+
+    subTitle("1、外观部件检修明细");
+    y = drawTable(
+      doc,
+      y,
+      fontPath,
+      ["序号", "部件名称", "检查结果", "缺陷描述", "处理措施"],
+      [28, 88, 62, 170, 175],
+      report.mechanical.appearance.map((row) => [
+        String(row.no),
+        cellText(row.part),
+        cellText(row.result),
+        cellText(row.defect) || "—",
+        cellText(row.action) || "—",
+      ]),
+      (row) => row[2].includes("▣") || row[2].includes("问题"),
+    );
+
+    subTitle("2、性能参数检测及调整记录");
+    y = drawTable(
+      doc,
+      y,
+      fontPath,
+      ["检测项目", "本次实测值", "标准范围", "上次记录值", "判定结果"],
+      [120, 90, 90, 90, 133],
+      report.mechanical.performance.map((row) => [
+        cellText(row.item),
+        cellText(row.value),
+        cellText(row.range),
+        cellText(row.prev),
+        cellText(row.result) || "—",
+      ]),
+      (row) => row[4].includes("▣") || row[4].includes("异常"),
+    );
+
+    subTitle("3、对比分析");
+    if (report.mechanical.analysis.vsStandard) {
+      bodyText(`（1）与标准合格工单对比：${report.mechanical.analysis.vsStandard}`);
+    }
+    if (report.mechanical.analysis.vsHistory?.trim()) {
+      bodyText(`（2）与历史记录对比：${report.mechanical.analysis.vsHistory}`);
+    }
+
+    subTitle("4、维护建议");
+    const tips = report.mechanical.suggestions.filter((s) => s.trim());
+    if (tips.length === 0) {
+      bodyText("无");
+    } else {
+      tips.slice(0, 3).forEach((s, i) => {
+        bodyText(`${i + 1}. ${s}`);
+      });
+    }
+
+    // —— 二、电气组 ——
+    if (report.electrical) {
+      sectionTitle("二、电气组（故障排查工单存档）");
+      const e = report.electrical;
+      bodyText(`1、故障类型：${e.faultType}`);
+      bodyText(`2、故障现象：${e.phenomenon}`);
+      bodyText(`3、故障猜想：${e.hypothesis}`);
+      bodyText(`4、故障原因：${e.cause}`);
+      bodyText(`5、故障信号：${e.signal}`);
+      bodyText(`6、处理结果：${e.result}`);
+    }
+
+    // 页脚
+    const pages = doc.bufferedPageRange();
+    for (let i = 0; i < pages.count; i++) {
+      doc.switchToPage(pages.start + i);
+      doc
+        .fontSize(8)
+        .fillColor(MUTED)
+        .text(
+          `受电弓智能检修系统  ·  第 ${i + 1} / ${pages.count} 页`,
+          MARGIN,
+          PAGE_H - 24,
+          { width: CONTENT_W, align: "center" },
+        );
+    }
+
+    doc.end();
+  });
+}
+
+function drawTable(
+  doc: PDFKit.PDFDocument,
+  startY: number,
+  fontPath: string,
+  headers: string[],
+  widths: number[],
+  rows: string[][],
+  isDangerRow?: (row: string[]) => boolean,
+): number {
+  const fontSize = 8;
+  const pad = 4;
+  let y = startY;
+
+  const measureRowHeight = (cells: string[], bold = false) => {
+    doc.font(fontPath).fontSize(fontSize);
+    if (bold) {
+      // pdfkit 单字体无 bold 文件时仍用同一字体
+    }
+    let maxH = 16;
+    cells.forEach((text, i) => {
+      const h = doc.heightOfString(text || " ", {
+        width: widths[i] - pad * 2,
+        lineGap: 1,
+      });
+      maxH = Math.max(maxH, h + pad * 2);
+    });
+    return Math.min(maxH, 72);
+  };
+
+  const drawRow = (
+    cells: string[],
+    opts: { header?: boolean; danger?: boolean },
+  ) => {
+    const h = measureRowHeight(cells, Boolean(opts.header));
+    if (y + h > PAGE_H - MARGIN) {
+      doc.addPage();
+      y = MARGIN;
+    }
+
+    let x = MARGIN;
+    cells.forEach((text, i) => {
+      const w = widths[i];
+      if (opts.header) {
+        doc.rect(x, y, w, h).fill(ACCENT);
+      } else {
+        doc.rect(x, y, w, h).fill("#FFFFFF");
+        doc.rect(x, y, w, h).strokeColor(LINE).lineWidth(0.5).stroke();
+      }
+      doc
+        .fillColor(
+          opts.header ? "#FFFFFF" : opts.danger ? DANGER : "#1A2332",
+        )
+        .fontSize(fontSize)
+        .text(text || " ", x + pad, y + pad, {
+          width: w - pad * 2,
+          height: h - pad * 2,
+          lineGap: 1,
+        });
+      x += w;
+    });
+    y += h;
+  };
+
+  drawRow(headers, { header: true });
+  for (const row of rows) {
+    drawRow(row, { danger: isDangerRow?.(row) });
+  }
+  return y + 10;
+}

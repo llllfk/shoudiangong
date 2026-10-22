@@ -21,6 +21,11 @@ import {
   safeDocumentFilename,
 } from "@/lib/documents";
 import {
+  extractInspectionReport,
+  isInspectionReport,
+  type InspectionReport,
+} from "@/lib/report-types";
+import {
   canSpeak,
   isSpeechAborted,
   speakText,
@@ -129,8 +134,12 @@ export function ChatApp() {
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [docCache, setDocCache] = useState<Record<string, IngestedDoc>>({});
+  const [reportDocCache, setReportDocCache] = useState<
+    Record<string, IngestedDoc>
+  >({});
   const [docViewer, setDocViewer] = useState<DocViewerState | null>(null);
   const [docBusyUrl, setDocBusyUrl] = useState<string | null>(null);
+  const [reportBusyKey, setReportBusyKey] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState<ShortcutCommand[]>([]);
   const [prologue, setPrologue] = useState("");
   const conversationIdRef = useRef<string | null>(null);
@@ -141,6 +150,7 @@ export function ChatApp() {
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const hintTimerRef = useRef<number | null>(null);
   const ingestingRef = useRef<Set<string>>(new Set());
+  const reportGeneratingRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
   const activeChatRef = useRef<{
     conversationId: string;
@@ -333,6 +343,73 @@ export function ChatApp() {
     [docCache, ingestDocument, showError],
   );
 
+  const reportKeyOf = useCallback((report: InspectionReport) => {
+    const sig = report.mechanical.appearance
+      .map((r) => `${r.no}:${r.result}`)
+      .join("|");
+    return `report:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
+  }, []);
+
+  const generateInspectionPdf = useCallback(
+    async (report: InspectionReport, opts?: { open?: boolean }) => {
+      const key = reportKeyOf(report);
+      const cached = reportDocCache[key];
+      if (cached) {
+        if (opts?.open !== false) {
+          setDocViewer({
+            title: report.title,
+            viewPath: cached.viewPath,
+            contentType: cached.contentType,
+            filename: cached.filename,
+          });
+        }
+        return cached;
+      }
+      if (reportGeneratingRef.current.has(key)) return null;
+      reportGeneratingRef.current.add(key);
+      setReportBusyKey(key);
+      try {
+        const res = await fetch("/api/reports/pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ report }),
+        });
+        const json = (await res.json()) as ApiResponse<IngestedDoc>;
+        if (!res.ok || !("data" in json)) {
+          throw new Error(
+            "error" in json ? json.error : "报告 PDF 生成失败",
+          );
+        }
+        const doc = json.data;
+        setReportDocCache((prev) => ({ ...prev, [key]: doc }));
+        if (opts?.open !== false) {
+          setDocViewer({
+            title: report.title,
+            viewPath: doc.viewPath,
+            contentType: doc.contentType,
+            filename: doc.filename,
+          });
+        }
+        return doc;
+      } finally {
+        reportGeneratingRef.current.delete(key);
+        setReportBusyKey((cur) => (cur === key ? null : cur));
+      }
+    },
+    [reportDocCache, reportKeyOf],
+  );
+
+  const openInspectionReport = useCallback(
+    async (report: InspectionReport) => {
+      try {
+        await generateInspectionPdf(report, { open: true });
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "无法打开报告");
+      }
+    },
+    [generateInspectionPdf, showError],
+  );
+
   // 智能体回复里的文档链接：后台自动拉到 S3，点击时应用内打开
   useEffect(() => {
     const urls = new Set<string>();
@@ -347,6 +424,20 @@ export function ChatApp() {
       });
     }
   }, [messages, docCache, ingestDocument]);
+
+  // 助手回复含报告 JSON：后台生成 PDF（不自动弹窗，点击「查看报告」打开）
+  useEffect(() => {
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      const report = extractInspectionReport(m.content);
+      if (!report) continue;
+      const key = reportKeyOf(report);
+      if (reportDocCache[key] || reportGeneratingRef.current.has(key)) continue;
+      void generateInspectionPdf(report, { open: false }).catch(() => {
+        // 预生成失败不打扰，点击时再提示
+      });
+    }
+  }, [messages, reportDocCache, reportKeyOf, generateInspectionPdf]);
 
   const clearPendingImages = useCallback(() => {
     setPendingImages([]);
