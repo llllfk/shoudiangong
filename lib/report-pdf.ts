@@ -1,11 +1,16 @@
 import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
-import type { InspectionReport } from "@/lib/report-types";
+import {
+  resolveReportMeta,
+  type InspectionReport,
+} from "@/lib/report-types";
 
 const PAGE_W = 595.28; // A4
 const PAGE_H = 841.89;
 const MARGIN = 36;
+/** 预留给页脚，避免正文挤到页脚或 pdfkit 自动再开一页 */
+const FOOTER_RESERVE = 32;
 const CONTENT_W = PAGE_W - MARGIN * 2;
 const PRIMARY = "#0B1E3A";
 const ACCENT = "#12305C";
@@ -56,6 +61,8 @@ export async function buildInspectionReportPdf(
 
     doc.font(fontPath);
 
+    const meta = resolveReportMeta(report);
+
     // 顶栏
     doc.rect(0, 0, PAGE_W, 52).fill(PRIMARY);
     doc.fillColor("#FFFFFF").fontSize(14);
@@ -64,10 +71,38 @@ export async function buildInspectionReportPdf(
       align: "center",
     });
 
-    let y = 68;
+    let y = 64;
+
+    // 场次 / 工位 / 当天日期（同一行）
+    const metaY = y;
+    const colW = CONTENT_W / 3;
+    doc.fillColor(PRIMARY).fontSize(10);
+    doc.text(`场次号：${meta.sessionNo}`, MARGIN, metaY, {
+      width: colW,
+      align: "left",
+      lineBreak: false,
+    });
+    doc.text(`工位号：${meta.stationNo}`, MARGIN + colW, metaY, {
+      width: colW,
+      align: "center",
+      lineBreak: false,
+    });
+    doc.text(`日期：${meta.dateLabel}`, MARGIN + colW * 2, metaY, {
+      width: colW,
+      align: "right",
+      lineBreak: false,
+    });
+    y = metaY + 20;
+    doc
+      .strokeColor(LINE)
+      .lineWidth(0.6)
+      .moveTo(MARGIN, y)
+      .lineTo(MARGIN + CONTENT_W, y)
+      .stroke();
+    y += 12;
 
     const ensureSpace = (need: number) => {
-      if (y + need > PAGE_H - MARGIN) {
+      if (y + need > PAGE_H - MARGIN - FOOTER_RESERVE) {
         doc.addPage();
         y = MARGIN;
       }
@@ -114,16 +149,17 @@ export async function buildInspectionReportPdf(
       doc,
       y,
       fontPath,
-      ["序号", "部件名称", "检查结果", "缺陷描述", "处理措施"],
-      [28, 88, 62, 170, 175],
+      ["序号", "部件名称", "检查项目", "检查结果", "缺陷描述", "处理措施"],
+      [24, 68, 108, 52, 135, 136],
       report.mechanical.appearance.map((row) => [
         String(row.no),
         cellText(row.part),
+        cellText(row.item),
         cellText(row.result),
         cellText(row.defect) || "—",
         cellText(row.action) || "—",
       ]),
-      (row) => row[2].includes("▣") || row[2].includes("问题"),
+      (row) => row[3].includes("▣") || row[3].includes("问题"),
     );
 
     subTitle("2、性能参数检测及调整记录");
@@ -173,19 +209,27 @@ export async function buildInspectionReportPdf(
       bodyText(`6、处理结果：${e.result}`);
     }
 
-    // 页脚
+    // 页脚：临时取消底边距，并禁止自动换行，避免 pdfkit 再开一页
     const pages = doc.bufferedPageRange();
     for (let i = 0; i < pages.count; i++) {
       doc.switchToPage(pages.start + i);
+      const prevBottom = doc.page.margins.bottom;
+      doc.page.margins.bottom = 0;
       doc
         .fontSize(8)
         .fillColor(MUTED)
         .text(
           `受电弓智能检修系统  ·  第 ${i + 1} / ${pages.count} 页`,
           MARGIN,
-          PAGE_H - 24,
-          { width: CONTENT_W, align: "center" },
+          PAGE_H - 22,
+          {
+            width: CONTENT_W,
+            align: "center",
+            lineBreak: false,
+            height: 12,
+          },
         );
+      doc.page.margins.bottom = prevBottom;
     }
 
     doc.end();
@@ -226,7 +270,7 @@ function drawTable(
     opts: { header?: boolean; danger?: boolean },
   ) => {
     const h = measureRowHeight(cells, Boolean(opts.header));
-    if (y + h > PAGE_H - MARGIN) {
+    if (y + h > PAGE_H - MARGIN - FOOTER_RESERVE) {
       doc.addPage();
       y = MARGIN;
     }

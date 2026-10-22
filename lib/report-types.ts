@@ -26,8 +26,18 @@ export type ElectricalBlock = {
   result: string;
 };
 
+export type ReportMeta = {
+  /** 场次号（由智能体 JSON 传入） */
+  sessionNo?: string | number;
+  /** 工位号（由智能体 JSON 传入） */
+  stationNo?: string | number;
+  /** 已废弃：日期一律以服务端生成 PDF 当天为准，忽略智能体填写 */
+  date?: string;
+};
+
 export type InspectionReport = {
   title: string;
+  meta?: ReportMeta;
   mechanical: {
     appearance: AppearanceRow[];
     performance: PerformanceRow[];
@@ -39,6 +49,24 @@ export type InspectionReport = {
   };
   electrical: ElectricalBlock | null;
 };
+
+/**
+ * 场次/工位取自智能体 JSON；日期固定为服务端生成 PDF 的当天（避免模型编造日期）。
+ */
+export function resolveReportMeta(report: InspectionReport): {
+  sessionNo: string;
+  stationNo: string;
+  dateLabel: string;
+} {
+  const sessionNo = String(report.meta?.sessionNo ?? "").trim() || "—";
+  const stationNo = String(report.meta?.stationNo ?? "").trim() || "—";
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const d = now.getDate();
+  const dateLabel = `${y}年${m}月${d}日`;
+  return { sessionNo, stationNo, dateLabel };
+}
 
 export function isInspectionReport(value: unknown): value is InspectionReport {
   if (!value || typeof value !== "object") return false;
@@ -89,4 +117,60 @@ function tryParseReport(raw: string): InspectionReport | null {
   } catch {
     return null;
   }
+}
+
+/** 对话展示时去掉报告 JSON 代码块，避免整段 JSON 刷屏 */
+export function stripInspectionReportJson(markdown: string): string {
+  const withoutFenced = markdown.replace(/```(?:json)?\s*[\s\S]*?```/gi, (block) => {
+    const inner = block.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "");
+    return tryParseReport(inner) ? "" : block;
+  });
+
+  // 无代码块但整段就是报告 JSON
+  const trimmed = withoutFenced.trim();
+  if (tryParseReport(trimmed)) return "";
+
+  // 未闭合的报告对象（完整流结束后偶发）
+  const start = withoutFenced.search(/\{\s*"title"\s*:/);
+  if (start >= 0) {
+    const maybe = withoutFenced.slice(start);
+    if (/"mechanical"\s*:/.test(maybe)) {
+      return withoutFenced.slice(0, start).replace(/\n{3,}/g, "\n\n").trim();
+    }
+  }
+
+  return withoutFenced
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * 流式输出时隐藏报告 JSON（含未完成的 ```json / 半截 { "title"）。
+ * 保留「已生成《…》」等短文案。
+ */
+export function stripStreamingReportJson(markdown: string): string {
+  let s = stripInspectionReportJson(markdown);
+
+  // 未完成的 fenced 代码块
+  const fenceIdx = s.search(/```(?:json)?/i);
+  if (fenceIdx >= 0) {
+    const after = s.slice(fenceIdx);
+    if (
+      /```(?:json)?\s*$/i.test(after.trimEnd()) ||
+      /```(?:json)?[\s\S]*\{/.test(after) ||
+      /"title"\s*:/.test(after) ||
+      /"mechanical"\s*:/.test(after)
+    ) {
+      s = s.slice(0, fenceIdx);
+    }
+  }
+
+  // 未完成的裸 JSON
+  const rawIdx = s.search(/\{\s*"title"\s*:/);
+  if (rawIdx >= 0) {
+    s = s.slice(0, rawIdx);
+  }
+
+  // 半截「已生成」后面已无正文时保留该行；多余空行压掉
+  return s.replace(/\n{3,}/g, "\n\n").trim();
 }

@@ -4,26 +4,16 @@ import {
   isDocumentContentType,
   isDocumentUrl,
 } from "@/lib/documents";
-import {
-  isStorageConfigured,
-  uploadObject,
-} from "@/lib/storage";
+import { uploadObject } from "@/lib/storage";
 
 const MAX_BYTES = 40 * 1024 * 1024;
 
 /**
- * 将智能体返回的文档外链拉取后写入 Coze S3，
+ * 将智能体返回的文档外链拉取后写入存储（Coze S3 或本地 storage/），
  * 返回 uri，供应用内同域预览（/api/documents/file）。
  */
 export async function POST(request: NextRequest) {
   try {
-    if (!isStorageConfigured()) {
-      return NextResponse.json(
-        { error: "对象存储未就绪，无法缓存文档" },
-        { status: 503 },
-      );
-    }
-
     const body = (await request.json()) as {
       url?: string;
       filename?: string;

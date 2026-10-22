@@ -937,6 +937,45 @@
   text-underline-offset: 2px;
 }
 
+.report-card {
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f7f9fc 0%, #eef2f7 100%);
+}
+
+.report-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  line-height: 1.4;
+}
+
+.report-card-desc {
+  margin: 0.35rem 0 0.75rem;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-sub);
+}
+
+.report-card-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary-light);
+  color: #fff;
+  font-size: 13px;
+}
+
+.report-card-btn:disabled {
+  opacity: 0.55;
+}
+
 .chat-md .doc-link {
   padding: 0;
   border: 0;

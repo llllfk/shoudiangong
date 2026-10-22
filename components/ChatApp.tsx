@@ -22,7 +22,7 @@ import {
 } from "@/lib/documents";
 import {
   extractInspectionReport,
-  isInspectionReport,
+  stripInspectionReportJson,
   type InspectionReport,
 } from "@/lib/report-types";
 import {
@@ -347,7 +347,10 @@ export function ChatApp() {
     const sig = report.mechanical.appearance
       .map((r) => `${r.no}:${r.result}`)
       .join("|");
-    return `report:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
+    // 含日期与版本，避免沿用旧缓存里智能体编造的错误日期
+    const now = new Date();
+    const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    return `report:v2:${day}:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
   }, []);
 
   const generateInspectionPdf = useCallback(
@@ -1210,24 +1213,37 @@ export function ChatApp() {
             )}
 
             {!loadingHistory &&
-              messages.map((m) => (
-                <MessageBubble
-                  key={m.id}
-                  message={m}
-                  onOpenDocument={openDocument}
-                  busyDocUrl={docBusyUrl}
-                  onSpeechError={(msg) =>
-                    showError(
-                      msg ||
-                        "豆包朗读失败。请确认 BOT_PAT 已开通 createSpeech",
-                    )
-                  }
-                />
-              ))}
+              messages.map((m) => {
+                const msgReport =
+                  m.role === "assistant"
+                    ? extractInspectionReport(m.content)
+                    : null;
+                return (
+                  <MessageBubble
+                    key={m.id}
+                    message={m}
+                    onOpenDocument={openDocument}
+                    busyDocUrl={docBusyUrl}
+                    onOpenReport={openInspectionReport}
+                    reportBusy={Boolean(
+                      msgReport &&
+                        reportBusyKey &&
+                        reportKeyOf(msgReport) === reportBusyKey,
+                    )}
+                    onSpeechError={(msg) =>
+                      showError(
+                        msg ||
+                          "豆包朗读失败。请确认 BOT_PAT 已开通 createSpeech",
+                      )
+                    }
+                  />
+                );
+              })}
 
             {sending && (
               <div className="msg-row is-assistant" aria-live="polite">
                 <div className="msg-bubble">
+                  {/* 分析转圈完成前不展示回复正文，结束后再进入消息列表 */}
                   <ThinkingPanel
                     text={
                       liveReasoning.trim()
@@ -1239,13 +1255,6 @@ export function ChatApp() {
                     pending
                     pendingLabel="分析中…"
                   />
-                  {liveAnswer.trim() ? (
-                    <div className="chat-md">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {stripAssistantImages(liveAnswer)}
-                      </ReactMarkdown>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             )}
@@ -1584,11 +1593,15 @@ function MessageBubble({
   message,
   onOpenDocument,
   busyDocUrl,
+  onOpenReport,
+  reportBusy,
   onSpeechError,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
+  onOpenReport?: (report: InspectionReport) => void;
+  reportBusy?: boolean;
   onSpeechError?: (message: string) => void;
 }) {
   if (message.role === "system") {
@@ -1600,6 +1613,8 @@ function MessageBubble({
       message={message}
       onOpenDocument={onOpenDocument}
       busyDocUrl={busyDocUrl}
+      onOpenReport={onOpenReport}
+      reportBusy={reportBusy}
       onSpeechError={onSpeechError}
     />
   );
@@ -1699,15 +1714,23 @@ function MessageBubbleBody({
   message,
   onOpenDocument,
   busyDocUrl,
+  onOpenReport,
+  reportBusy,
   onSpeechError,
 }: {
   message: ChatMessage;
   onOpenDocument?: (url: string, title?: string) => void;
   busyDocUrl?: string | null;
+  onOpenReport?: (report: InspectionReport) => void;
+  reportBusy?: boolean;
   onSpeechError?: (message: string) => void;
 }) {
   const isUser = message.role === "user";
-  const speechText = isUser ? "" : plainTextForSpeech(message.content);
+  const report = !isUser ? extractInspectionReport(message.content) : null;
+  const displayContent = !isUser
+    ? stripInspectionReportJson(message.content)
+    : message.content;
+  const speechText = isUser ? "" : plainTextForSpeech(displayContent);
   const { active, preparing, playing, toggle } = useSpeechPlayback(
     message.id,
     speechText,
@@ -1750,46 +1773,64 @@ function MessageBubbleBody({
                 autoCollapse={message.reasoningAutoCollapse}
               />
             ) : null}
-            <div className="chat-md">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  a: ({ href, children }) => {
-                    const url = typeof href === "string" ? href : "";
-                    const label =
-                      typeof children === "string"
-                        ? children
-                        : Array.isArray(children)
-                          ? children.map(String).join("")
-                          : "文档";
-                    const isDoc = Boolean(
-                      url &&
-                        (isDocumentUrl(url) || looksLikeDocumentName(label)),
-                    );
-                    const busy = Boolean(url && busyDocUrl === url);
-
-                    // 点击文档链接 → 应用内预览；下载放在预览顶栏，避免手机误点直接下载
-                    if (isDoc && onOpenDocument) {
-                      return (
-                        <button
-                          type="button"
-                          onClick={() => void onOpenDocument(url, label)}
-                          disabled={busy}
-                          className="doc-link"
-                        >
-                          {busy ? `处理中「${label}」…` : children}
-                        </button>
+            {report && onOpenReport ? (
+              <div className="report-card">
+                <div className="report-card-title">{report.title}</div>
+                <p className="report-card-desc">
+                  系统已按检修数据排版 PDF，可在应用内预览或下载到本地。
+                </p>
+                <button
+                  type="button"
+                  className="report-card-btn"
+                  disabled={reportBusy}
+                  onClick={() => void onOpenReport(report)}
+                >
+                  {reportBusy ? "正在生成…" : "查看报告"}
+                </button>
+              </div>
+            ) : null}
+            {displayContent.trim() ? (
+              <div className="chat-md">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    a: ({ href, children }) => {
+                      const url = typeof href === "string" ? href : "";
+                      const label =
+                        typeof children === "string"
+                          ? children
+                          : Array.isArray(children)
+                            ? children.map(String).join("")
+                            : "文档";
+                      const isDoc = Boolean(
+                        url &&
+                          (isDocumentUrl(url) || looksLikeDocumentName(label)),
                       );
-                    }
+                      const busy = Boolean(url && busyDocUrl === url);
 
-                    return <a href={url || undefined}>{children}</a>;
-                  },
-                  img: () => null,
-                }}
-              >
-                {stripAssistantImages(message.content)}
-              </ReactMarkdown>
-            </div>
+                      // 点击文档链接 → 应用内预览；下载放在预览顶栏，避免手机误点直接下载
+                      if (isDoc && onOpenDocument) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => void onOpenDocument(url, label)}
+                            disabled={busy}
+                            className="doc-link"
+                          >
+                            {busy ? `处理中「${label}」…` : children}
+                          </button>
+                        );
+                      }
+
+                      return <a href={url || undefined}>{children}</a>;
+                    },
+                    img: () => null,
+                  }}
+                >
+                  {stripAssistantImages(displayContent)}
+                </ReactMarkdown>
+              </div>
+            ) : null}
           </>
         )}
         {showSpeak && (

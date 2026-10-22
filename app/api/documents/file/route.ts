@@ -1,19 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getObjectBytes, isStorageConfigured } from "@/lib/storage";
+import { getObjectBytes } from "@/lib/storage";
 
 /**
- * 同域输出 S3 文档，Content-Disposition: inline，
+ * 同域输出文档（S3 或本地 storage/），Content-Disposition: inline，
  * 供页面内 iframe/embed 打开，避免跳转外部浏览器。
  */
 export async function GET(request: NextRequest) {
   try {
-    if (!isStorageConfigured()) {
-      return NextResponse.json(
-        { error: "对象存储未就绪" },
-        { status: 503 },
-      );
-    }
-
     const uri = request.nextUrl.searchParams.get("uri")?.trim();
     if (!uri) {
       return NextResponse.json({ error: "缺少 uri" }, { status: 400 });

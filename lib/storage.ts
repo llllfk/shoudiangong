@@ -3,6 +3,8 @@
  * - COZE_BUCKET_ENDPOINT_URL
  * - COZE_BUCKET_NAME
  * 鉴权：workload identity → 请求头 x-storage-token（无需 AK/SK）。
+ *
+ * 本地开发未配置 S3 时：写入项目目录 storage/，URI 形如 local://...
  */
 
 import {
@@ -12,6 +14,8 @@ import {
   type PutObjectCommandInput,
 } from "@aws-sdk/client-s3";
 import { randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
 import {
   getCozeAccessToken,
   isCozeIdentityConfigured,
@@ -33,6 +37,84 @@ export function isStorageConfigured(): boolean {
   return Boolean(
     (bucketEndpoint() && bucketName()) || isCozeIdentityConfigured(),
   );
+}
+
+/** 本地落盘根目录：项目下 storage/ */
+function localStorageRoot(): string {
+  return path.join(process.cwd(), "storage");
+}
+
+export function isLocalObjectUri(uri: string): boolean {
+  return uri.startsWith("local://");
+}
+
+export function toLocalObjectUri(key: string): string {
+  return `local://${key.replace(/\\/g, "/")}`;
+}
+
+function parseLocalObjectUri(uri: string): string | null {
+  if (!isLocalObjectUri(uri)) return null;
+  const key = uri.slice("local://".length).replace(/^\/+/, "");
+  if (!key || key.includes("..")) return null;
+  return key;
+}
+
+async function uploadObjectLocal(
+  body: Buffer | Uint8Array,
+  options?: {
+    contentType?: string;
+    filename?: string;
+    folder?: string;
+  },
+): Promise<{ uri: string; key: string; contentType: string }> {
+  const folder = options?.folder || "files";
+  const ext = guessExt(options?.filename, options?.contentType);
+  const key = `pantograph/${folder}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${ext}`;
+  const contentType = options?.contentType || "application/octet-stream";
+  const safeName = (options?.filename || `file${ext}`)
+    .replace(/[\\"\r\n]/g, "_")
+    .slice(0, 180);
+
+  const fullPath = path.join(localStorageRoot(), key);
+  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+  await fs.promises.writeFile(fullPath, body);
+  await fs.promises.writeFile(
+    `${fullPath}.meta.json`,
+    JSON.stringify({ contentType, filename: safeName }),
+    "utf8",
+  );
+
+  return { uri: toLocalObjectUri(key), key, contentType };
+}
+
+async function getObjectBytesLocal(
+  uriOrKey: string,
+): Promise<{ body: Buffer; contentType: string; filename?: string }> {
+  const key = parseLocalObjectUri(uriOrKey) || uriOrKey.replace(/^\/+/, "");
+  if (!key || key.includes("..")) {
+    throw new Error("非法本地对象路径");
+  }
+  const fullPath = path.join(localStorageRoot(), key);
+  const root = path.resolve(localStorageRoot());
+  const resolved = path.resolve(fullPath);
+  if (!resolved.startsWith(root + path.sep) && resolved !== root) {
+    throw new Error("非法本地对象路径");
+  }
+  const body = await fs.promises.readFile(resolved);
+  let contentType = "application/octet-stream";
+  let filename = path.basename(key);
+  try {
+    const metaRaw = await fs.promises.readFile(`${resolved}.meta.json`, "utf8");
+    const meta = JSON.parse(metaRaw) as {
+      contentType?: string;
+      filename?: string;
+    };
+    if (meta.contentType) contentType = meta.contentType;
+    if (meta.filename) filename = meta.filename;
+  } catch {
+    if (/\.pdf$/i.test(filename)) contentType = "application/pdf";
+  }
+  return { body, contentType, filename };
 }
 
 function requireEndpoint(): string {
@@ -108,7 +190,7 @@ export async function uploadImageObject(
   return { uri: uploaded.uri, key: uploaded.key };
 }
 
-/** 通用对象上传（图片 / 文档等） */
+/** 通用对象上传：Coze 有 S3 走 S3，本地无 S3 则写入 storage/ */
 export async function uploadObject(
   body: Buffer | Uint8Array,
   options?: {
@@ -117,6 +199,10 @@ export async function uploadObject(
     folder?: string;
   },
 ): Promise<{ uri: string; key: string; contentType: string }> {
+  if (!isStorageConfigured()) {
+    return uploadObjectLocal(body, options);
+  }
+
   const endpoint = requireEndpoint();
   const bucket = requireBucket();
   const folder = options?.folder || "files";
@@ -140,10 +226,14 @@ export async function uploadObject(
   return { uri: toObjectUri(bucket, key), key, contentType };
 }
 
-/** 从对象存储读取字节（供同源内嵌预览） */
+/** 从对象存储或本地 storage/ 读取字节（供同源内嵌预览） */
 export async function getObjectBytes(
   uriOrKey: string,
 ): Promise<{ body: Buffer; contentType: string; filename?: string }> {
+  if (isLocalObjectUri(uriOrKey) || !isStorageConfigured()) {
+    return getObjectBytesLocal(uriOrKey);
+  }
+
   const endpoint = requireEndpoint();
   const defaultBucket = requireBucket();
   let bucket = defaultBucket;

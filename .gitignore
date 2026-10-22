@@ -101,6 +101,9 @@ logs/
 # Preview files
 .preview
 
+# 本地开发文档/报告落盘（无 Coze S3 时）
+/storage/
+
 # CodeGraph index
 .codegraph
 .codegraph/

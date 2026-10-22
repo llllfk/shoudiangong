@@ -4,20 +4,16 @@ import {
   isInspectionReport,
   type InspectionReport,
 } from "@/lib/report-types";
-import { isStorageConfigured, uploadObject } from "@/lib/storage";
+import { uploadObject } from "@/lib/storage";
 
 /**
- * 根据智能体报告 JSON 生成 PDF，写入对象存储，返回同域预览路径。
+ * 根据智能体报告 JSON 生成 PDF：
+ * - Coze 平台：写入对象存储
+ * - 本地开发：写入项目目录 storage/
+ * 返回同域预览路径 /api/documents/file?uri=...
  */
 export async function POST(request: NextRequest) {
   try {
-    if (!isStorageConfigured()) {
-      return NextResponse.json(
-        { error: "对象存储未就绪，无法生成报告" },
-        { status: 503 },
-      );
-    }
-
     const body = (await request.json()) as { report?: unknown };
     if (!isInspectionReport(body.report)) {
       return NextResponse.json(
