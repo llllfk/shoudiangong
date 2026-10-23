@@ -350,7 +350,7 @@ export function ChatApp() {
     // 含日期与版本，避免沿用旧缓存里智能体编造的错误日期
     const now = new Date();
     const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-    return `report:v2:${day}:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
+    return `report:v3:${day}:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
   }, []);
 
   const generateInspectionPdf = useCallback(
@@ -586,6 +586,41 @@ export function ChatApp() {
     },
     [activeId, clearPendingImages, loadConversation, sending, showError],
   );
+
+  /** 多端不同步时：手动拉取当前/最近一场对话 */
+  const handleRefreshConversation = useCallback(async () => {
+    if (sending || loadingHistory) return;
+    try {
+      await refreshConversations();
+      const convId = conversationIdRef.current || activeId;
+      if (convId) {
+        await loadConversation(convId);
+        return;
+      }
+      const histRes = await fetch("/api/history");
+      const histJson =
+        (await histRes.json()) as ApiResponse<HistoryResult>;
+      if (!histRes.ok || !("data" in histJson)) {
+        throw new Error(
+          "error" in histJson ? histJson.error : "刷新对话失败",
+        );
+      }
+      if (histJson.data.conversationId) {
+        conversationIdRef.current = histJson.data.conversationId;
+        setActiveId(histJson.data.conversationId);
+        setMessages(mapHistoryMessages(histJson.data.messages));
+      }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : "刷新对话失败");
+    }
+  }, [
+    activeId,
+    loadConversation,
+    loadingHistory,
+    refreshConversations,
+    sending,
+    showError,
+  ]);
 
   const handleStop = useCallback(async () => {
     abortRef.current?.abort();
@@ -1123,6 +1158,9 @@ export function ChatApp() {
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         sidebarOpen={sidebarOpen}
         showMenu
+        onRefresh={() => void handleRefreshConversation()}
+        refreshing={loadingHistory}
+        refreshDisabled={sending}
       />
 
       <div className="app-body">
@@ -1428,10 +1466,16 @@ function AppHeader({
   onToggleSidebar,
   sidebarOpen = false,
   showMenu,
+  onRefresh,
+  refreshing = false,
+  refreshDisabled = false,
 }: {
   onToggleSidebar: () => void;
   sidebarOpen?: boolean;
   showMenu: boolean;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  refreshDisabled?: boolean;
 }) {
   return (
     <header className="app-header">
@@ -1474,6 +1518,34 @@ function AppHeader({
         )}
         <span className="status-dot" aria-hidden="true" />
         <h1 className="app-title">受电弓智能检修系统</h1>
+        {onRefresh && (
+          <button
+            type="button"
+            aria-label="刷新对话"
+            title="刷新对话内容"
+            onClick={onRefresh}
+            disabled={refreshDisabled || refreshing}
+            className="icon-btn header-refresh-btn"
+          >
+            {refreshing ? (
+              <span className="spinner sm" aria-hidden="true" />
+            ) : (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+                <path d="M21 3v6h-6" />
+              </svg>
+            )}
+            <span className="header-refresh-label">刷新</span>
+          </button>
+        )}
       </div>
       <span
         className="app-badge"

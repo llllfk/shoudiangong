@@ -127,6 +127,28 @@
   color: #fff;
 }
 
+.icon-btn:disabled {
+  opacity: 0.5;
+}
+
+.header-refresh-btn {
+  width: auto;
+  min-width: 36px;
+  gap: 4px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.header-refresh-label {
+  line-height: 1;
+}
+
+.spinner.sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
 .status-dot {
   width: 10px;
   height: 10px;

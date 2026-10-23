@@ -11,11 +11,61 @@ export type AppearanceRow = {
 
 export type PerformanceRow = {
   item: string;
-  value: string;
   range: string;
-  prev: string;
   result: string;
+  /** 第1/2/3次实测值（优先） */
+  m1?: string;
+  m2?: string;
+  m3?: string;
+  /** 旧版兼容：本次实测 / 上次记录 */
+  value?: string;
+  prev?: string;
 };
+
+/** 统一成三次测量列，兼容旧 JSON */
+export function normalizePerformanceRow(row: PerformanceRow): {
+  item: string;
+  m1: string;
+  m2: string;
+  m3: string;
+  range: string;
+  result: string;
+} {
+  const blank = (v: string | undefined) => {
+    const t = (v ?? "").trim();
+    return t || "未测量";
+  };
+  if (row.m1 != null || row.m2 != null || row.m3 != null) {
+    return {
+      item: row.item,
+      m1: blank(row.m1),
+      m2: blank(row.m2),
+      m3: blank(row.m3),
+      range: row.range,
+      result: (row.result ?? "").trim(),
+    };
+  }
+  const prev = (row.prev ?? "").trim();
+  const value = (row.value ?? "").trim();
+  if (!prev || prev === "—") {
+    return {
+      item: row.item,
+      m1: blank(value),
+      m2: "未测量",
+      m3: "未测量",
+      range: row.range,
+      result: (row.result ?? "").trim(),
+    };
+  }
+  return {
+    item: row.item,
+    m1: prev,
+    m2: blank(value),
+    m3: "未测量",
+    range: row.range,
+    result: (row.result ?? "").trim(),
+  };
+}
 
 export type ElectricalBlock = {
   faultType: string;
@@ -43,7 +93,10 @@ export type InspectionReport = {
     performance: PerformanceRow[];
     analysis: {
       vsStandard: string;
-      vsHistory: string;
+      /** 三次参数测量比对总结（推荐） */
+      vsMeasurements?: string;
+      /** 旧字段，等同 vsMeasurements */
+      vsHistory?: string;
     };
     suggestions: string[];
   };

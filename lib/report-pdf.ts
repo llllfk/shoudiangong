@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 import {
+  normalizePerformanceRow,
   resolveReportMeta,
   type InspectionReport,
 } from "@/lib/report-types";
@@ -169,24 +170,32 @@ export async function buildInspectionReportPdf(
       doc,
       y,
       fontPath,
-      ["检测项目", "本次实测值", "标准范围", "上次记录值", "判定结果"],
-      [120, 90, 90, 90, 133],
-      report.mechanical.performance.map((row) => [
-        cellText(row.item),
-        cellText(row.value),
-        cellText(row.range),
-        cellText(row.prev),
-        cellText(row.result) || "—",
-      ]),
-      (row) => row[4].includes("▣") || row[4].includes("异常"),
+      ["检测项目", "第1次", "第2次", "第3次", "标准范围", "判定结果"],
+      [108, 72, 72, 72, 88, 111],
+      report.mechanical.performance.map((row) => {
+        const p = normalizePerformanceRow(row);
+        return [
+          cellText(p.item),
+          cellText(p.m1),
+          cellText(p.m2),
+          cellText(p.m3),
+          cellText(p.range),
+          cellText(p.result) || "—",
+        ];
+      }),
+      (row) => row[5].includes("▣") || row[5].includes("异常"),
     );
 
     subTitle("3、对比分析");
     if (report.mechanical.analysis.vsStandard) {
       bodyText(`（1）与标准合格工单对比：${report.mechanical.analysis.vsStandard}`);
     }
-    if (report.mechanical.analysis.vsHistory?.trim()) {
-      bodyText(`（2）与历史记录对比：${report.mechanical.analysis.vsHistory}`);
+    const measureSummary =
+      report.mechanical.analysis.vsMeasurements?.trim() ||
+      report.mechanical.analysis.vsHistory?.trim() ||
+      "";
+    if (measureSummary) {
+      bodyText(`（2）三次参数测量比对：${measureSummary}`);
     }
 
     subTitle("4、维护建议");
