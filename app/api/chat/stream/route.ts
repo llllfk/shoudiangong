@@ -157,7 +157,16 @@ export async function POST(request: NextRequest) {
                     }),
                   )
                   .catch((err) => {
-                    console.error("[chat/stream] persist user failed:", err);
+                    console.error(
+                      "[chat/stream] persist user failed:",
+                      err instanceof Error ? err.message : err,
+                      {
+                        uriLen: encodeMultiValue(allImageUris)?.length ?? 0,
+                        urlLen: encodeMultiValue(allImageUrls)?.length ?? 0,
+                        fileIdLen: encodeMultiValue(allFileIds)?.length ?? 0,
+                        fileCount: allFileIds.length,
+                      },
+                    );
                   });
               }
               continue;

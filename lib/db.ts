@@ -68,7 +68,7 @@ export async function ensureSchema(): Promise<void> {
           content TEXT NOT NULL DEFAULT '',
           image_uri TEXT,
           image_url TEXT,
-          coze_file_id VARCHAR(128),
+          coze_file_id TEXT,
           coze_chat_id VARCHAR(128),
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
@@ -76,6 +76,10 @@ export async function ensureSchema(): Promise<void> {
         ALTER TABLE messages ADD COLUMN IF NOT EXISTS coze_chat_id VARCHAR(128);
         ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning TEXT;
         ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+        -- 多图时 coze_file_id / 图链为 JSON 数组，VARCHAR(128) 会截断导致整条用户消息写入失败
+        ALTER TABLE messages ALTER COLUMN coze_file_id TYPE TEXT;
+        ALTER TABLE messages ALTER COLUMN image_uri TYPE TEXT;
+        ALTER TABLE messages ALTER COLUMN image_url TYPE TEXT;
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
           ON messages (conversation_id, created_at);
