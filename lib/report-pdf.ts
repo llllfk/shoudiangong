@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 import {
+  electricalWireNo,
   normalizeElectrical,
   normalizePerformanceRow,
   resolveReportMeta,
@@ -210,7 +211,7 @@ export async function buildInspectionReportPdf(
     }
 
     // —— 二、电气组 ——
-    // 六列表头 + 两行数据（固定两条故障记录）
+    // 与纸质工单一致：六列表头 + 两行数据
     const electricalRows = normalizeElectrical(report.electrical);
     if (electricalRows) {
       sectionTitle("二、电气组（故障排查工单存档）");
@@ -227,18 +228,18 @@ export async function buildInspectionReportPdf(
         doc,
         y,
         fontPath,
-        ["故障类型", "故障现象", "故障猜想", "故障原因", "故障信号", "处理结果"],
+        ["故障类型", "故障现象", "故障猜想", "故障原因", "故障线号", "处理结果"],
         elecWidths,
         electricalRows.map((e) => [
           cellText(e.faultType) || "—",
           cellText(e.phenomenon) || "—",
           cellText(e.hypothesis) || "—",
           cellText(e.cause) || "—",
-          cellText(e.signal) || "—",
+          cellText(electricalWireNo(e)) || "—",
           cellText(e.result) || "—",
         ]),
         undefined,
-        200,
+        120,
       );
     }
 

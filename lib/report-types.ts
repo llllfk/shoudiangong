@@ -72,24 +72,94 @@ export type ElectricalBlock = {
   phenomenon: string;
   hypothesis: string;
   cause: string;
-  signal: string;
+  /** 故障线号（纸质工单列名）；旧字段 signal 仍兼容 */
+  wireNo?: string;
+  signal?: string;
   result: string;
 };
 
+/** 取故障线号：优先 wireNo，兼容旧 signal */
+export function electricalWireNo(row: ElectricalBlock): string {
+  return (row.wireNo || row.signal || "").trim();
+}
+
 /**
- * 兼容旧版单对象 electrical；规范为数组（工单固定 2 条故障）。
+ * 与纸质「故障排查工单」一致：六列、两行
+ * 故障类型 | 故障现象 | 故障猜想 | 故障原因 | 故障线号 | 处理结果
+ */
+export const FIXED_ELECTRICAL_ROWS: ElectricalBlock[] = [
+  {
+    faultType: "列车无法上电",
+    phenomenon: "继电器11-k03、11-k4103无法吸合",
+    hypothesis: "x1-40至x1-39线路通断异常",
+    cause: "11-k03常闭接点误接为常开",
+    wireNo: "11-k03",
+    result: "已解决",
+  },
+  {
+    faultType: "司机室无法占用",
+    phenomenon: "继电器21-k04、21-k05、21-k06无法吸合",
+    hypothesis: "x1-52至x1-59线路通断异常",
+    cause: "x1-59线路短接",
+    wireNo: "x1-59",
+    result: "已解决",
+  },
+];
+
+function looksLikeLegacyElectrical(
+  rows: ElectricalBlock[],
+): boolean {
+  const blob = rows
+    .map(
+      (r) =>
+        `${r.faultType}|${r.phenomenon}|${r.hypothesis}|${r.cause}|${electricalWireNo(r)}`,
+    )
+    .join("\n");
+  // 旧版：类型写「电气类」、现象把两条挤在一起，或线号列仍是通断描述
+  if (rows.some((r) => (r.faultType || "").includes("电气类"))) return true;
+  if (
+    blob.includes("列车无法上电") &&
+    (blob.includes("司机室无法占") || blob.includes("11-k4103"))
+  ) {
+    const first = rows[0];
+    if (
+      first &&
+      (first.phenomenon || "").includes("列车无法上电") &&
+      (first.phenomenon || "").includes("；")
+    ) {
+      return true;
+    }
+    if (
+      first &&
+      (electricalWireNo(first).includes("通断") ||
+        electricalWireNo(first).includes("x1-40至"))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 规范为纸质工单两行；旧版合并/错列文案一律替换为固定两条。
  */
 export function normalizeElectrical(
   electrical: ElectricalBlock | ElectricalBlock[] | null | undefined,
 ): ElectricalBlock[] | null {
   if (electrical == null) return null;
-  if (Array.isArray(electrical)) {
-    return electrical.length > 0 ? electrical : null;
+  const list = Array.isArray(electrical)
+    ? electrical
+    : typeof electrical === "object"
+      ? [electrical]
+      : [];
+  if (list.length === 0) return null;
+  if (list.length === 1 || looksLikeLegacyElectrical(list)) {
+    return FIXED_ELECTRICAL_ROWS.map((r) => ({ ...r }));
   }
-  if (typeof electrical === "object") {
-    return [electrical];
-  }
-  return null;
+  return list.map((r) => ({
+    ...r,
+    wireNo: electricalWireNo(r) || r.wireNo,
+  }));
 }
 
 export type ReportMeta = {
