@@ -1191,22 +1191,12 @@ export function ChatApp() {
           replyDurationMs: Math.max(0, finishedAt - startedAt),
         },
       ]);
-      let problems = extractProblemParts(answer);
-      if (problems.length === 0) {
-        const report = extractInspectionReport(answer);
-        if (report) {
-          problems = report.mechanical.appearance
-            .filter((r) => /存在问题|▣/.test(r.result))
-            .map((r) => ({
-              part: r.part,
-              item: r.item,
-              desc: r.defect || undefined,
-              action: r.action || undefined,
-            }));
+      // 仅部件明细（【部件】+【结果】存在问题）强提醒；生成报告 JSON 不弹
+      if (!extractInspectionReport(answer)) {
+        const problems = extractProblemParts(answer);
+        if (problems.length > 0) {
+          setProblemAlert(problems);
         }
-      }
-      if (problems.length > 0) {
-        setProblemAlert(problems);
       }
       void refreshConversations();
     } catch (err) {

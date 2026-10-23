@@ -31,17 +31,6 @@ export function extractProblemParts(text: string): ProblemPart[] {
     });
   }
 
-  // 全貌总结行兜底：检出异常 N 项：导流线——…
-  if (out.length === 0) {
-    const m = text.match(/检出异常\s*\d+\s*项[：:]\s*([^\n]+)/);
-    if (m?.[1]) {
-      const chunk = m[1].split(/[；;]/)[0]?.trim() || "";
-      const name = chunk.split(/——|—|-/)[0]?.trim();
-      if (name && !/均正常|无异常|0\s*项/.test(name)) {
-        out.push({ part: name, desc: chunk.includes("——") ? chunk.split("——")[1]?.trim() : undefined });
-      }
-    }
-  }
-
+  // 不解析【检测总结】合并句，避免无明细块时误弹；必须有【部件】明细
   return out;
 }
