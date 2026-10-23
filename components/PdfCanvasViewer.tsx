@@ -28,6 +28,7 @@ export function PdfCanvasViewer({
       host.replaceChildren();
 
       try {
+        // blob: 本地预览；http(s) 再拉取。优先首屏渲染第 1 页，其余后台继续画。
         const res = await fetch(src);
         if (!res.ok) {
           throw new Error(`读取失败（HTTP ${res.status}）`);
@@ -41,26 +42,23 @@ export function PdfCanvasViewer({
         const pdf = await pdfjs.getDocument({ data }).promise;
         if (cancelled) return;
 
-        // 物理像素：手机常见 2x/3x，不乘 DPR 会发糊
         const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
         const cssWidth = Math.max(
           host.clientWidth || window.innerWidth - 24,
           280,
         );
 
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const renderPage = async (pageNum: number) => {
           const page = await pdf.getPage(pageNum);
           if (cancelled) return;
 
           const base = page.getViewport({ scale: 1 });
-          // 先按屏宽适配，再乘 DPR 提高清晰度
           const fitScale = cssWidth / base.width;
           const viewport = page.getViewport({ scale: fitScale * dpr });
 
           const canvas = document.createElement("canvas");
           canvas.width = Math.floor(viewport.width);
           canvas.height = Math.floor(viewport.height);
-          // CSS 尺寸用逻辑像素，浏览器再缩放到屏宽
           canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
           canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
           canvas.style.maxWidth = "100%";
@@ -77,9 +75,20 @@ export function PdfCanvasViewer({
             canvasContext: ctx,
             viewport,
           }).promise;
+        };
+
+        // 先出首页，立刻结束 loading
+        if (pdf.numPages >= 1) {
+          await renderPage(1);
+          if (!cancelled) setLoading(false);
+        } else if (!cancelled) {
+          setLoading(false);
         }
 
-        if (!cancelled) setLoading(false);
+        for (let pageNum = 2; pageNum <= pdf.numPages; pageNum++) {
+          await renderPage(pageNum);
+          if (cancelled) return;
+        }
       } catch (err) {
         if (!cancelled) {
           setLoading(false);

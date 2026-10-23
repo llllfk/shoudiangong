@@ -21,16 +21,25 @@ const LINE = "#C5CDD8";
 const MUTED = "#5A6A7A";
 const DANGER = "#B42318";
 
+let cachedFontPath: string | null = null;
+
 function resolveFontPath(): string {
+  if (cachedFontPath) return cachedFontPath;
   const bundled = path.join(process.cwd(), "assets", "fonts", "ReportCJK.ttf");
-  if (fs.existsSync(bundled)) return bundled;
+  if (fs.existsSync(bundled)) {
+    cachedFontPath = bundled;
+    return bundled;
+  }
   const win = [
     "C:\\Windows\\Fonts\\simhei.ttf",
     "C:\\Windows\\Fonts\\msyh.ttf",
     "C:\\Windows\\Fonts\\simsun.ttc",
   ];
   for (const p of win) {
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(p)) {
+      cachedFontPath = p;
+      return p;
+    }
   }
   throw new Error("缺少中文字体：请将 ReportCJK.ttf 放到 assets/fonts/");
 }

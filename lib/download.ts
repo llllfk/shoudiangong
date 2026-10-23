@@ -7,8 +7,10 @@ export async function downloadToLocal(
   filename: string,
 ): Promise<void> {
   const safeName = safeDocumentFilename(filename);
-  const sep = viewPath.includes("?") ? "&" : "?";
-  const url = `${viewPath}${sep}download=1&filename=${encodeURIComponent(safeName)}`;
+  // blob: 预览地址不能拼 query；同源接口才带 download 参数
+  const url = viewPath.startsWith("blob:")
+    ? viewPath
+    : `${viewPath}${viewPath.includes("?") ? "&" : "?"}download=1&filename=${encodeURIComponent(safeName)}`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`下载失败（HTTP ${res.status}）`);

@@ -16,10 +16,7 @@ import {
 import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
-import {
-  getCozeAccessToken,
-  isCozeIdentityConfigured,
-} from "@/lib/coze-identity";
+import { getCozeAccessToken } from "@/lib/coze-identity";
 
 let client: S3Client | null = null;
 let clientEndpoint: string | null = null;
@@ -32,11 +29,9 @@ function bucketName(): string | undefined {
   return process.env.COZE_BUCKET_NAME?.trim();
 }
 
-/** 平台是否具备对象存储能力（系统变量占位，运行时由平台注入） */
+/** 平台是否具备对象存储能力（须同时有端点与桶名；勿仅凭 identity 判定） */
 export function isStorageConfigured(): boolean {
-  return Boolean(
-    (bucketEndpoint() && bucketName()) || isCozeIdentityConfigured(),
-  );
+  return Boolean(bucketEndpoint() && bucketName());
 }
 
 /** 本地落盘根目录：项目下 storage/ */

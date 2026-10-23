@@ -12,6 +12,8 @@ export interface ChatMessage {
   imagePreviewUrl?: string;
   imagePreviewUrls?: string[];
   createdAt: number;
+  /** 助手回复耗时（从对应用户消息发出到本条完成），毫秒 */
+  replyDurationMs?: number;
 }
 
 export interface ShortcutCommand {

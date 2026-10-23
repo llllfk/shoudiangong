@@ -54,6 +54,8 @@ type IngestedDoc = {
   viewPath: string;
   contentType: string;
   filename: string;
+  /** 内存 blob，打开预览免二次下载 */
+  previewUrl?: string;
 };
 
 type ConfigState = "loading" | "ready" | "missing";
@@ -71,10 +73,41 @@ function createOpeningMessage(prologue: string): ChatMessage | null {
   };
 }
 
+function formatMessageTime(ts: number): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const time = d.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  if (sameDay) return time;
+  const date = d.toLocaleDateString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return `${date} ${time}`;
+}
+
+function formatReplyDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  if (totalSec < 60) return `${totalSec}秒`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s > 0 ? `${m}分${s}秒` : `${m}分`;
+}
+
 function mapHistoryMessages(
   messages: HistoryResult["messages"],
 ): ChatMessage[] {
-  return messages.map((m) => {
+  const mapped: ChatMessage[] = messages.map((m) => {
     const urls =
       m.imageUrls && m.imageUrls.length > 0
         ? m.imageUrls
@@ -91,6 +124,20 @@ function mapHistoryMessages(
       createdAt: Date.parse(m.createdAt) || Date.now(),
     };
   });
+  // 用相邻用户消息时间推算历史回复时长
+  let lastUserAt: number | null = null;
+  for (const msg of mapped) {
+    if (msg.role === "user") {
+      lastUserAt = msg.createdAt;
+    } else if (msg.role === "assistant" && lastUserAt != null) {
+      const dur = msg.createdAt - lastUserAt;
+      if (dur >= 0 && dur < 24 * 60 * 60 * 1000) {
+        msg.replyDurationMs = dur;
+      }
+      lastUserAt = null;
+    }
+  }
+  return mapped;
 }
 
 function formatListTime(iso: string): string {
@@ -143,6 +190,9 @@ export function ChatApp() {
   const [reportBusyKey, setReportBusyKey] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState<ShortcutCommand[]>([]);
   const [prologue, setPrologue] = useState("");
+  /** 本轮用户发出时间，用于计算回复时长与等待计时 */
+  const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
+  const [waitElapsedMs, setWaitElapsedMs] = useState(0);
   const conversationIdRef = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -362,7 +412,7 @@ export function ChatApp() {
         if (opts?.open !== false) {
           setDocViewer({
             title: report.title,
-            viewPath: cached.viewPath,
+            viewPath: cached.previewUrl || cached.viewPath,
             contentType: cached.contentType,
             filename: cached.filename,
           });
@@ -378,18 +428,58 @@ export function ChatApp() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ report }),
         });
-        const json = (await res.json()) as ApiResponse<IngestedDoc>;
-        if (!res.ok || !("data" in json)) {
-          throw new Error(
-            "error" in json ? json.error : "报告 PDF 生成失败",
-          );
+        const contentType = res.headers.get("content-type") || "";
+        if (!res.ok) {
+          if (contentType.includes("application/json")) {
+            const errJson = (await res.json()) as ApiResponse<IngestedDoc>;
+            throw new Error(
+              "error" in errJson ? errJson.error : "报告 PDF 生成失败",
+            );
+          }
+          throw new Error(`报告 PDF 生成失败（HTTP ${res.status}）`);
         }
-        const doc = json.data;
+
+        // 新接口：直接返回 PDF 字节；旧 JSON 兜底
+        let doc: IngestedDoc;
+        if (contentType.includes("application/pdf")) {
+          const buf = await res.arrayBuffer();
+          const previewUrl = URL.createObjectURL(
+            new Blob([buf], { type: "application/pdf" }),
+          );
+          const filenameEnc = res.headers.get("X-Report-Filename");
+          const filename = filenameEnc
+            ? decodeURIComponent(filenameEnc)
+            : `${report.title || "报告"}.pdf`;
+          doc = {
+            uri: res.headers.get("X-Report-Uri") || "",
+            viewPath:
+              res.headers.get("X-Report-View-Path") || previewUrl,
+            contentType: "application/pdf",
+            filename,
+            previewUrl,
+          };
+          const pdfMs = res.headers.get("X-Report-Timing-Pdf");
+          const uploadMs = res.headers.get("X-Report-Timing-Upload");
+          if (pdfMs || uploadMs) {
+            console.info(
+              `[report] pdf=${pdfMs || "?"}ms upload=${uploadMs || "?"}ms`,
+            );
+          }
+        } else {
+          const json = (await res.json()) as ApiResponse<IngestedDoc>;
+          if (!("data" in json)) {
+            throw new Error(
+              "error" in json ? json.error : "报告 PDF 生成失败",
+            );
+          }
+          doc = json.data;
+        }
+
         setReportDocCache((prev) => ({ ...prev, [key]: doc }));
         if (opts?.open !== false) {
           setDocViewer({
             title: report.title,
-            viewPath: doc.viewPath,
+            viewPath: doc.previewUrl || doc.viewPath,
             contentType: doc.contentType,
             filename: doc.filename,
           });
@@ -731,6 +821,7 @@ export function ChatApp() {
       imageFiles.length > 1 ? "检测这些部件" : "检测这个部件";
     const displayText =
       text || (imageFiles.length > 0 ? defaultText : "");
+    const startedAt = Date.now();
     const userMsg: ChatMessage = {
       id: createId("user"),
       role: "user",
@@ -738,8 +829,10 @@ export function ChatApp() {
       imagePreviewUrl: localPreviews[0],
       imagePreviewUrls:
         localPreviews.length > 0 ? localPreviews : undefined,
-      createdAt: Date.now(),
+      createdAt: startedAt,
     };
+    setSendStartedAt(startedAt);
+    setWaitElapsedMs(0);
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     clearPendingImages();
@@ -1067,6 +1160,7 @@ export function ChatApp() {
       stopHintSequence();
       if (analysisTimer != null) window.clearInterval(analysisTimer);
       const thinking = liveReasoningRef.current.trim();
+      const finishedAt = Date.now();
       setMessages((prev) => [
         ...prev,
         {
@@ -1075,7 +1169,8 @@ export function ChatApp() {
           content: answer,
           reasoning: thinking || undefined,
           reasoningAutoCollapse: Boolean(thinking),
-          createdAt: Date.now(),
+          createdAt: finishedAt,
+          replyDurationMs: Math.max(0, finishedAt - startedAt),
         },
       ]);
       void refreshConversations();
@@ -1144,6 +1239,8 @@ export function ChatApp() {
       setLiveAnswer("");
       abortRef.current = null;
       activeChatRef.current = null;
+      setSendStartedAt(null);
+      setWaitElapsedMs(0);
       setSending(false);
     }
   }, [
@@ -1156,6 +1253,17 @@ export function ChatApp() {
     showError,
     stopHintSequence,
   ]);
+
+  useEffect(() => {
+    if (!sending || sendStartedAt == null) {
+      setWaitElapsedMs(0);
+      return;
+    }
+    const tick = () => setWaitElapsedMs(Date.now() - sendStartedAt);
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [sending, sendStartedAt]);
 
   useEffect(() => () => stopHintSequence(), [stopHintSequence]);
 
@@ -1376,19 +1484,27 @@ export function ChatApp() {
 
             {sending && (
               <div className="msg-row is-assistant" aria-live="polite">
-                <div className="msg-bubble">
-                  {/* 分析转圈完成前不展示回复正文，结束后再进入消息列表 */}
-                  <ThinkingPanel
-                    text={
-                      liveReasoning.trim()
-                        ? liveReasoning
-                        : hintLines.length > 0
-                          ? hintLines.join("\n")
-                          : "思考中…"
-                    }
-                    pending
-                    pendingLabel="分析中…"
-                  />
+                <div className="msg-stack">
+                  <div className="msg-bubble">
+                    {/* 分析转圈完成前不展示回复正文，结束后再进入消息列表 */}
+                    <ThinkingPanel
+                      text={
+                        liveReasoning.trim()
+                          ? liveReasoning
+                          : hintLines.length > 0
+                            ? hintLines.join("\n")
+                            : "思考中…"
+                      }
+                      pending
+                      pendingLabel="分析中…"
+                    />
+                  </div>
+                  <div className="msg-meta">
+                    {formatMessageTime(sendStartedAt ?? Date.now())}
+                    {waitElapsedMs > 0
+                      ? ` · 已等待 ${formatReplyDuration(waitElapsedMs)}`
+                      : ""}
+                  </div>
                 </div>
               </div>
             )}
@@ -1916,8 +2032,15 @@ function MessageBubbleBody({
     ? sanitizeReasoning(message.reasoning)
     : "";
 
+  const timeLabel = formatMessageTime(message.createdAt);
+  const durationLabel =
+    !isUser && message.replyDurationMs != null
+      ? formatReplyDuration(message.replyDurationMs)
+      : "";
+
   return (
     <div className={`msg-row ${isUser ? "is-user" : "is-assistant"}`}>
+      <div className="msg-stack">
       <div className={`msg-bubble${isUser ? " is-user" : ""}`}>
         {previewImages.length > 0 && (
           <div className="msg-images">
@@ -2040,6 +2163,13 @@ function MessageBubbleBody({
             </button>
           </div>
         )}
+      </div>
+      {(timeLabel || durationLabel) && (
+        <div className="msg-meta">
+          {timeLabel}
+          {durationLabel ? ` · 用时 ${durationLabel}` : ""}
+        </div>
+      )}
       </div>
     </div>
   );
