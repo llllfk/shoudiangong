@@ -48,6 +48,8 @@ import type {
   ChatStatusResult,
   ConversationItem,
   ConversationsResult,
+  DraftImageItem,
+  DraftImagesResult,
   HistoryResult,
   ShortcutCommand,
   ShortcutsResult,
@@ -66,6 +68,13 @@ type IngestedDoc = {
 type ConfigState = "loading" | "ready" | "missing";
 
 const MAX_PENDING_IMAGES = 20;
+
+function draftPreviewUrl(item: DraftImageItem): string {
+  if (item.imageUri) {
+    return `/api/documents/file?uri=${encodeURIComponent(item.imageUri)}`;
+  }
+  return item.imageUrl || "";
+}
 
 function createOpeningMessage(prologue: string): ChatMessage | null {
   const content = prologue.trim();
@@ -174,6 +183,10 @@ export function ChatApp() {
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
+  /** 多端待发：平板上传后两端可见，由电脑端发送 */
+  const [sharedDrafts, setSharedDrafts] = useState<DraftImageItem[]>([]);
+  const [draftAvailable, setDraftAvailable] = useState(false);
+  const [draftUploading, setDraftUploading] = useState(0);
   const [sending, setSending] = useState(false);
   const [hintLines, setHintLines] = useState<string[]>([]);
   const hintLinesRef = useRef<string[]>([]);
@@ -216,6 +229,12 @@ export function ChatApp() {
     conversationId: string;
     chatId: string;
   } | null>(null);
+  /** 多端同步：避免并发拉取 / 重复强提醒 */
+  const syncBusyRef = useRef(false);
+  const messagesSigRef = useRef("");
+  const problemAlertKeyRef = useRef("");
+  const draftsSigRef = useRef("");
+  const draftBusyRef = useRef(false);
 
   const stopHintSequence = useCallback(() => {
     if (hintTimerRef.current != null) {
@@ -266,7 +285,11 @@ export function ChatApp() {
         }
         conversationIdRef.current = histJson.data.conversationId;
         setActiveId(histJson.data.conversationId);
-        setMessages(mapHistoryMessages(histJson.data.messages));
+        const mapped = mapHistoryMessages(histJson.data.messages);
+        messagesSigRef.current = `${histJson.data.conversationId}:${mapped
+          .map((m) => `${m.id}:${m.role}:${m.content.length}`)
+          .join("|")}`;
+        setMessages(mapped);
       } finally {
         setLoadingHistory(false);
       }
@@ -542,10 +565,40 @@ export function ChatApp() {
     }
   }, [messages, reportDocCache, reportKeyOf, generateInspectionPdf]);
 
+  const syncSharedDrafts = useCallback(async () => {
+    if (draftBusyRef.current) return;
+    draftBusyRef.current = true;
+    try {
+      const res = await fetch("/api/draft-images");
+      const json = (await res.json()) as ApiResponse<DraftImagesResult>;
+      if (!res.ok || !("data" in json)) return;
+      setDraftAvailable(json.data.available !== false);
+      const images = json.data.images || [];
+      const sig = images.map((d) => d.id).join(",");
+      if (sig === draftsSigRef.current) return;
+      draftsSigRef.current = sig;
+      setSharedDrafts(images);
+    } catch {
+      // 静默；下一轮再拉
+    } finally {
+      draftBusyRef.current = false;
+    }
+  }, []);
+
   const clearPendingImages = useCallback(() => {
     setPendingImages([]);
     if (cameraInputRef.current) cameraInputRef.current.value = "";
     if (galleryInputRef.current) galleryInputRef.current.value = "";
+    // 同步清空多端待发队列
+    void (async () => {
+      try {
+        await fetch("/api/draft-images", { method: "DELETE" });
+        draftsSigRef.current = "";
+        setSharedDrafts([]);
+      } catch {
+        // ignore
+      }
+    })();
   }, []);
 
   const pickImageFiles = useCallback(
@@ -555,19 +608,90 @@ export function ChatApp() {
         f.type.startsWith("image/"),
       );
       if (list.length === 0) return;
-      // 仅加入输入区待发送，不自动发消息
-      setPendingImages((prev) => {
-        const merged = [...prev, ...list];
-        if (merged.length > MAX_PENDING_IMAGES) {
-          showError(`一次最多上传 ${MAX_PENDING_IMAGES} 张照片`);
-          return merged.slice(0, MAX_PENDING_IMAGES);
-        }
-        return merged;
-      });
       setAttachMenuOpen(false);
-      window.setTimeout(() => textInputRef.current?.focus(), 0);
+
+      // 优先：拍完立刻上传到多端待发，电脑可拉取后发送（不自动发消息）
+      void (async () => {
+        const room =
+          MAX_PENDING_IMAGES - sharedDrafts.length - pendingImages.length;
+        if (room <= 0) {
+          showError(`一次最多上传 ${MAX_PENDING_IMAGES} 张照片`);
+          return;
+        }
+        const toUpload = list.slice(0, room);
+        if (list.length > room) {
+          showError(`一次最多上传 ${MAX_PENDING_IMAGES} 张照片`);
+        }
+
+        // 探测是否可用跨端队列；不可用则退回本机待发
+        let useShared = draftAvailable;
+        if (!useShared) {
+          try {
+            const probe = await fetch("/api/draft-images");
+            const probeJson =
+              (await probe.json()) as ApiResponse<DraftImagesResult>;
+            useShared =
+              probe.ok &&
+              "data" in probeJson &&
+              probeJson.data.available !== false;
+            setDraftAvailable(useShared);
+          } catch {
+            useShared = false;
+          }
+        }
+
+        if (!useShared) {
+          setPendingImages((prev) => {
+            const merged = [...prev, ...toUpload];
+            return merged.slice(0, MAX_PENDING_IMAGES);
+          });
+          window.setTimeout(() => textInputRef.current?.focus(), 0);
+          return;
+        }
+
+        setDraftUploading((n) => n + toUpload.length);
+        for (const file of toUpload) {
+          try {
+            const compressed = await compressImageFile(file);
+            const form = new FormData();
+            form.append("file", compressed);
+            const res = await fetch("/api/draft-images", {
+              method: "POST",
+              body: form,
+            });
+            const json = (await res.json()) as ApiResponse<{
+              image: DraftImageItem;
+            }>;
+            if (!res.ok || !("data" in json)) {
+              throw new Error(
+                "error" in json ? json.error : "上传待发失败",
+              );
+            }
+            setSharedDrafts((prev) => {
+              if (prev.some((d) => d.id === json.data.image.id)) return prev;
+              const next = [...prev, json.data.image];
+              draftsSigRef.current = next.map((d) => d.id).join(",");
+              return next;
+            });
+          } catch (err) {
+            showError(
+              err instanceof Error ? err.message : "上传待发失败，请重试",
+            );
+          } finally {
+            setDraftUploading((n) => Math.max(0, n - 1));
+          }
+        }
+        window.setTimeout(() => textInputRef.current?.focus(), 0);
+      })();
     },
-    [loadingHistory, sending, showError],
+    [
+      draftAvailable,
+      loadingHistory,
+      pendingImages.length,
+      sending,
+      sharedDrafts.length,
+      showError,
+    ],
   );
 
   /** 快捷指令写入输入框（有文字则追加到后面），不自动发送；去掉未填 {{占位符}} */
@@ -610,6 +734,35 @@ export function ChatApp() {
     if (cameraInputRef.current) cameraInputRef.current.value = "";
     if (galleryInputRef.current) galleryInputRef.current.value = "";
   }, []);
+
+  const removeSharedDraftAt = useCallback(
+    (draftId: string) => {
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/draft-images?id=${encodeURIComponent(draftId)}`,
+            { method: "DELETE" },
+          );
+          if (!res.ok) {
+            const json = (await res.json()) as ApiResponse<{ ok: boolean }>;
+            throw new Error(
+              "error" in json ? json.error : "移除待发照片失败",
+            );
+          }
+          setSharedDrafts((prev) => {
+            const next = prev.filter((d) => d.id !== draftId);
+            draftsSigRef.current = next.map((d) => d.id).join(",");
+            return next;
+          });
+        } catch (err) {
+          showError(
+            err instanceof Error ? err.message : "移除待发照片失败",
+          );
+        }
+      })();
+    },
+    [showError],
+  );
 
   const openCamera = useCallback(() => {
     setAttachMenuOpen(false);
@@ -751,40 +904,115 @@ export function ChatApp() {
     ],
   );
 
-  /** 多端不同步时：手动拉取当前/最近一场对话 */
+  const maybeAlertProblems = useCallback((content: string) => {
+    if (extractInspectionReport(content)) return;
+    const problems = extractProblemParts(content);
+    if (problems.length === 0) return;
+    const key = `${problems.map((p) => p.part).join(",")}|${content.length}|${content.slice(0, 120)}`;
+    if (key === problemAlertKeyRef.current) return;
+    problemAlertKeyRef.current = key;
+    setProblemAlert(problems);
+  }, []);
+
+  /**
+   * 多端同步：始终拉「最近一场」对话。
+   * 平板拍照发送后，投屏电脑可自动跟上同一会话（含异常强提醒）。
+   */
+  const syncFromServer = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (sending || loadingHistory || syncBusyRef.current) return;
+      syncBusyRef.current = true;
+      try {
+        const histRes = await fetch("/api/history");
+        const histJson =
+          (await histRes.json()) as ApiResponse<HistoryResult>;
+        if (!histRes.ok || !("data" in histJson)) {
+          if (!opts?.silent) {
+            throw new Error(
+              "error" in histJson ? histJson.error : "同步对话失败",
+            );
+          }
+          return;
+        }
+        const { conversationId, messages: raw } = histJson.data;
+        if (!conversationId) return;
+
+        const mapped = mapHistoryMessages(raw);
+        const sig = `${conversationId}:${mapped
+          .map((m) => `${m.id}:${m.role}:${m.content.length}`)
+          .join("|")}`;
+        if (sig === messagesSigRef.current) {
+          void refreshConversations();
+          return;
+        }
+        messagesSigRef.current = sig;
+        conversationIdRef.current = conversationId;
+        setActiveId(conversationId);
+        setMessages(mapped);
+        void refreshConversations();
+
+        const lastAsst = [...mapped]
+          .reverse()
+          .find((m) => m.role === "assistant");
+        if (lastAsst) {
+          maybeAlertProblems(lastAsst.content);
+        }
+      } catch (err) {
+        if (!opts?.silent) {
+          showError(err instanceof Error ? err.message : "同步对话失败");
+        }
+      } finally {
+        syncBusyRef.current = false;
+      }
+    },
+    [loadingHistory, maybeAlertProblems, refreshConversations, sending, showError],
+  );
+
+  /** 顶栏刷新：立即同步最近一场 */
   const handleRefreshConversation = useCallback(async () => {
-    if (sending || loadingHistory) return;
-    try {
-      await refreshConversations();
-      const convId = conversationIdRef.current || activeId;
-      if (convId) {
-        await loadConversation(convId);
-        return;
-      }
-      const histRes = await fetch("/api/history");
-      const histJson =
-        (await histRes.json()) as ApiResponse<HistoryResult>;
-      if (!histRes.ok || !("data" in histJson)) {
-        throw new Error(
-          "error" in histJson ? histJson.error : "刷新对话失败",
-        );
-      }
-      if (histJson.data.conversationId) {
-        conversationIdRef.current = histJson.data.conversationId;
-        setActiveId(histJson.data.conversationId);
-        setMessages(mapHistoryMessages(histJson.data.messages));
-      }
-    } catch (err) {
-      showError(err instanceof Error ? err.message : "刷新对话失败");
-    }
-  }, [
-    activeId,
-    loadConversation,
-    loadingHistory,
-    refreshConversations,
-    sending,
-    showError,
-  ]);
+    await syncFromServer({ silent: false });
+  }, [syncFromServer]);
+
+  // 投屏电脑 / 多端：定时拉最近对话；回到前台立刻同步
+  useEffect(() => {
+    if (configState !== "ready") return;
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      void syncFromServer({ silent: true });
+    };
+    const timer = window.setInterval(tick, 3000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    const onFocus = () => tick();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    tick();
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [configState, syncFromServer]);
+
+  // 多端待发照片：平板上传后电脑约 2 秒内可见
+  useEffect(() => {
+    if (configState !== "ready") return;
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      void syncSharedDrafts();
+    };
+    const timer = window.setInterval(tick, 2000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    tick();
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [configState, syncSharedDrafts]);
 
   const handleStop = useCallback(async () => {
     abortRef.current?.abort();
@@ -807,7 +1035,12 @@ export function ChatApp() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (sending || (!text && pendingImages.length === 0)) {
+    const draftsSnapshot = [...sharedDrafts];
+    const imageFiles = [...pendingImages];
+    if (
+      sending ||
+      (!text && draftsSnapshot.length === 0 && imageFiles.length === 0)
+    ) {
       return;
     }
 
@@ -818,34 +1051,43 @@ export function ChatApp() {
 
     setSending(true);
     setErrorToast(null);
+    const totalPhotos = draftsSnapshot.length + imageFiles.length;
     setHintStatus(
-      pendingImages.length > 0
-        ? "正在压缩并上传照片…"
+      totalPhotos > 0
+        ? draftsSnapshot.length > 0 && imageFiles.length === 0
+          ? "正在提交已同步照片…"
+          : "正在压缩并上传照片…"
         : "正在提交检测请求…",
     );
 
-    const imageFiles = [...pendingImages];
     // 独立创建气泡预览 URL，避免清空待发送区时 revoke 导致图片空白
+    const draftPreviews = draftsSnapshot
+      .map((d) => draftPreviewUrl(d))
+      .filter(Boolean);
     const localPreviews = imageFiles.map((f) => URL.createObjectURL(f));
+    const bubblePreviews = [...draftPreviews, ...localPreviews];
     const defaultText =
-      imageFiles.length > 1 ? "检测这些部件" : "检测这个部件";
+      totalPhotos > 1 ? "检测这些部件" : "检测这个部件";
     const displayText =
-      text || (imageFiles.length > 0 ? defaultText : "");
+      text || (totalPhotos > 0 ? defaultText : "");
     const startedAt = Date.now();
     const userMsg: ChatMessage = {
       id: createId("user"),
       role: "user",
       content: displayText,
-      imagePreviewUrl: localPreviews[0],
+      imagePreviewUrl: bubblePreviews[0],
       imagePreviewUrls:
-        localPreviews.length > 0 ? localPreviews : undefined,
+        bubblePreviews.length > 0 ? bubblePreviews : undefined,
       createdAt: startedAt,
     };
     setSendStartedAt(startedAt);
     setWaitElapsedMs(0);
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
-    clearPendingImages();
+    // 本机待发先清；共享队列等发送成功后再清，失败可重试
+    setPendingImages([]);
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+    if (galleryInputRef.current) galleryInputRef.current.value = "";
 
     const throwIfAborted = () => {
       if (ac.signal.aborted) {
@@ -859,6 +1101,21 @@ export function ChatApp() {
       const imageUrls: string[] = [];
       /** 气泡预览：优先同域代理，避免手机端外部签链空白 */
       const previewUrls: string[] = [];
+
+      // 已由平板同步到待发队列的照片：直接用 file_id，无需再传
+      for (const d of draftsSnapshot) {
+        fileIds.push(d.fileId);
+        if (d.imageUri) {
+          imageUris.push(d.imageUri);
+          previewUrls.push(
+            `/api/documents/file?uri=${encodeURIComponent(d.imageUri)}`,
+          );
+        }
+        if (d.imageUrl) {
+          imageUrls.push(d.imageUrl);
+          if (!d.imageUri) previewUrls.push(d.imageUrl);
+        }
+      }
 
       for (let i = 0; i < imageFiles.length; i++) {
         throwIfAborted();
@@ -1191,11 +1448,16 @@ export function ChatApp() {
           replyDurationMs: Math.max(0, finishedAt - startedAt),
         },
       ]);
-      // 仅部件明细（【部件】+【结果】存在问题）强提醒；生成报告 JSON 不弹
-      if (!extractInspectionReport(answer)) {
-        const problems = extractProblemParts(answer);
-        if (problems.length > 0) {
-          setProblemAlert(problems);
+      // 仅部件明细强提醒；生成报告不弹（多端同步用同一套去重 key）
+      maybeAlertProblems(answer);
+      // 发送成功后清空多端待发，避免电脑/平板重复提交
+      if (draftsSnapshot.length > 0) {
+        try {
+          await fetch("/api/draft-images", { method: "DELETE" });
+          draftsSigRef.current = "";
+          setSharedDrafts([]);
+        } catch {
+          // 队列清失败不阻断；下次发送仍可能带上，用户可手动清空
         }
       }
       void refreshConversations();
@@ -1269,12 +1531,13 @@ export function ChatApp() {
       setSending(false);
     }
   }, [
-    clearPendingImages,
     input,
+    maybeAlertProblems,
     pendingImages,
     refreshConversations,
     sending,
     setHintStatus,
+    sharedDrafts,
     showError,
     stopHintSequence,
   ]);
@@ -1654,7 +1917,9 @@ export function ChatApp() {
                   disabled={
                     sending ||
                     loadingHistory ||
-                    pendingImages.length >= MAX_PENDING_IMAGES
+                    draftUploading > 0 ||
+                    sharedDrafts.length + pendingImages.length >=
+                      MAX_PENDING_IMAGES
                   }
                   onClick={() => setAttachMenuOpen((v) => !v)}
                   className="btn-ghost"
@@ -1675,34 +1940,72 @@ export function ChatApp() {
               </div>
 
               <div className="composer-box">
-                {previewUrls.length > 0 && (
+                {(sharedDrafts.length > 0 ||
+                  previewUrls.length > 0 ||
+                  draftUploading > 0) && (
                   <div className="pending-row">
+                    {sharedDrafts.map((d, index) => {
+                      const url = draftPreviewUrl(d);
+                      return (
+                        <div
+                          key={`draft-${d.id}`}
+                          className="pending-thumb"
+                          title="已同步，可在电脑端发送"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          {url ? (
+                            <img
+                              src={url}
+                              alt={`待发同步照片 ${index + 1}`}
+                            />
+                          ) : (
+                            <span className="pending-meta">图</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => removeSharedDraftAt(d.id)}
+                            disabled={sending}
+                            aria-label={`移除第 ${index + 1} 张同步照片`}
+                            className="pending-remove"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
                     {previewUrls.map((url, index) => (
-                      <div key={`${url}-${index}`} className="pending-thumb">
+                      <div key={`local-${url}-${index}`} className="pending-thumb">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={url}
-                          alt={`待发送部件照片 ${index + 1}`}
+                          alt={`本机待发照片 ${index + 1}`}
                         />
                         <button
                           type="button"
                           onClick={() => removePendingAt(index)}
                           disabled={sending}
-                          aria-label={`移除第 ${index + 1} 张图片`}
+                          aria-label={`移除第 ${index + 1} 张本机图片`}
                           className="pending-remove"
                         >
                           ×
                         </button>
                       </div>
                     ))}
+                    {draftUploading > 0 && (
+                      <span className="pending-meta">
+                        上传中 {draftUploading}…
+                      </span>
+                    )}
                     <span className="pending-meta">
-                      {previewUrls.length}/{MAX_PENDING_IMAGES}
+                      {sharedDrafts.length + previewUrls.length}/
+                      {MAX_PENDING_IMAGES}
+                      {sharedDrafts.length > 0 ? " · 已同步" : ""}
                     </span>
                     <button
                       type="button"
                       onClick={clearPendingImages}
                       className="pending-clear"
-                      disabled={sending}
+                      disabled={sending || draftUploading > 0}
                     >
                       清空
                     </button>
@@ -1715,11 +2018,15 @@ export function ChatApp() {
                   onPaste={handlePasteImage}
                   rows={1}
                   placeholder={
-                    previewUrls.length > 0
-                      ? "可补充文字说明，再点发送…"
-                      : shortcuts.length > 0
-                        ? "输入说明，或点上方快捷指令填入后发送…"
-                        : "输入说明，可多选/粘贴图片或拍照上传…"
+                    sharedDrafts.length > 0
+                      ? "平板照片已同步，可在电脑补充说明后发送…"
+                      : previewUrls.length > 0
+                        ? "可补充文字说明，再点发送…"
+                        : shortcuts.length > 0
+                          ? "输入说明，或点上方快捷指令填入后发送…"
+                          : draftAvailable
+                            ? "平板拍照即同步；电脑端补充说明后发送…"
+                            : "输入说明，可多选/粘贴图片或拍照上传…"
                   }
                   disabled={sending || loadingHistory}
                 />
@@ -1739,7 +2046,10 @@ export function ChatApp() {
                   onClick={() => void handleSend()}
                   disabled={
                     loadingHistory ||
-                    (!input.trim() && pendingImages.length === 0)
+                    draftUploading > 0 ||
+                    (!input.trim() &&
+                      sharedDrafts.length === 0 &&
+                      pendingImages.length === 0)
                   }
                   className="btn-primary"
                 >
@@ -1818,7 +2128,7 @@ function AppHeader({
           <button
             type="button"
             aria-label="刷新对话"
-            title="刷新对话内容"
+            title="同步最近一场对话（投屏端会自动同步）"
             onClick={onRefresh}
             disabled={refreshDisabled || refreshing}
             className="icon-btn header-refresh-btn"

@@ -72,6 +72,22 @@ export interface UploadResult {
   imageUrl?: string;
 }
 
+/** 多端共享的待发照片（平板上传 → 电脑拉取发送） */
+export interface DraftImageItem {
+  id: string;
+  fileId: string;
+  imageUri?: string;
+  imageUrl?: string;
+  filename?: string;
+  createdAt: string;
+}
+
+export interface DraftImagesResult {
+  images: DraftImageItem[];
+  /** false 表示未配库，无法跨端共享 */
+  available?: boolean;
+}
+
 export interface HistoryResult {
   conversationId: string | null;
   messages: Array<{

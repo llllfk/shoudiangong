@@ -87,6 +87,20 @@ export async function ensureSchema(): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
           ON conversations (user_id, updated_at DESC)
           WHERE deleted_at IS NULL;
+
+        -- 多端待发照片：平板上传后，电脑端可拉取并发送
+        CREATE TABLE IF NOT EXISTS draft_images (
+          id BIGSERIAL PRIMARY KEY,
+          user_id VARCHAR(100) NOT NULL,
+          file_id TEXT NOT NULL,
+          image_uri TEXT,
+          image_url TEXT,
+          filename VARCHAR(255),
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_draft_images_user_created
+          ON draft_images (user_id, created_at ASC, id ASC);
       `);
     })().catch((err) => {
       schemaReady = null;
