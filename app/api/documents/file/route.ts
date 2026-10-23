@@ -53,9 +53,11 @@ export async function GET(request: NextRequest) {
       contentType = "text/csv; charset=utf-8";
     }
 
-    // 预览用纯 inline（不带 filename），减少 WebView 把响应当成附件下载
+    // 预览用纯 inline；下载时 filename 必须 ASCII，中文走 filename*
+    const asciiName =
+      filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "") || "file";
     const disposition = asDownload
-      ? `attachment; filename="${filename}"`
+      ? `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(filename)}`
       : "inline";
 
     return new NextResponse(bytes, {

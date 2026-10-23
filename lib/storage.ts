@@ -205,16 +205,19 @@ export async function uploadObject(
   const key = `pantograph/${folder}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}${ext}`;
 
   const contentType = options?.contentType || "application/octet-stream";
-  const safeName = (options?.filename || `file${ext}`).replace(
+  // HTTP 头只能是 ASCII；中文文件名放 filename*，避免 Invalid character in header
+  const rawName = (options?.filename || `file${ext}`).replace(
     /[\\"\r\n]/g,
     "_",
   ).slice(0, 180);
+  const asciiName =
+    rawName.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "") || `file${ext}`;
   const input: PutObjectCommandInput = {
     Bucket: bucket,
     Key: key,
     Body: body,
     ContentType: contentType,
-    ContentDisposition: `inline; filename="${safeName}"`,
+    ContentDisposition: `inline; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`,
   };
 
   await getClient(endpoint).send(new PutObjectCommand(input));
