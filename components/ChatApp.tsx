@@ -28,6 +28,7 @@ import {
 import {
   extractInspectionReport,
   stripInspectionReportJson,
+  stripStreamingReportJson,
   type InspectionReport,
 } from "@/lib/report-types";
 import {
@@ -1564,7 +1565,6 @@ export function ChatApp() {
               <div className="msg-row is-assistant" aria-live="polite">
                 <div className="msg-stack">
                   <div className="msg-bubble">
-                    {/* 分析转圈完成前不展示回复正文，结束后再进入消息列表 */}
                     <ThinkingPanel
                       text={
                         liveReasoning.trim()
@@ -1573,9 +1573,25 @@ export function ChatApp() {
                             ? hintLines.join("\n")
                             : "思考中…"
                       }
-                      pending
+                      pending={!liveAnswer.trim()}
                       pendingLabel="分析中…"
+                      autoCollapse={Boolean(liveAnswer.trim())}
                     />
+                    {/* 流式正文：有增量即打印；异常强提醒等整段结束后再弹 */}
+                    {liveAnswer.trim() ? (
+                      <div className="chat-md is-streaming">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            img: () => null,
+                          }}
+                        >
+                          {stripAssistantImages(
+                            stripStreamingReportJson(liveAnswer),
+                          )}
+                        </ReactMarkdown>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="msg-meta">
                     {formatMessageTime(sendStartedAt ?? Date.now())}
