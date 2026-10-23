@@ -646,7 +646,8 @@ export function ChatApp() {
 
   useEffect(() => {
     if (!attachMenuOpen) return;
-    const onPointerDown = (ev: MouseEvent | TouchEvent) => {
+    // 使用 DOM Event，避免与 React.MouseEvent 冲突导致 addEventListener 类型报错
+    const onPointerDown = (ev: Event) => {
       const el = attachMenuRef.current;
       if (el && !el.contains(ev.target as Node)) {
         setAttachMenuOpen(false);
