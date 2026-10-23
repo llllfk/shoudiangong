@@ -22,6 +22,10 @@ import {
   safeDocumentFilename,
 } from "@/lib/documents";
 import {
+  extractProblemParts,
+  type ProblemPart,
+} from "@/lib/problem-parts";
+import {
   extractInspectionReport,
   stripInspectionReportJson,
   type InspectionReport,
@@ -180,6 +184,10 @@ export function ChatApp() {
   const liveAnswerRef = useRef("");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+  /** 回复含「存在问题」部件时的强提醒 */
+  const [problemAlert, setProblemAlert] = useState<ProblemPart[] | null>(
+    null,
+  );
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [docCache, setDocCache] = useState<Record<string, IngestedDoc>>({});
   const [reportDocCache, setReportDocCache] = useState<
@@ -1182,6 +1190,23 @@ export function ChatApp() {
           replyDurationMs: Math.max(0, finishedAt - startedAt),
         },
       ]);
+      let problems = extractProblemParts(answer);
+      if (problems.length === 0) {
+        const report = extractInspectionReport(answer);
+        if (report) {
+          problems = report.mechanical.appearance
+            .filter((r) => /存在问题|▣/.test(r.result))
+            .map((r) => ({
+              part: r.part,
+              item: r.item,
+              desc: r.defect || undefined,
+              action: r.action || undefined,
+            }));
+        }
+      }
+      if (problems.length > 0) {
+        setProblemAlert(problems);
+      }
       void refreshConversations();
     } catch (err) {
       const aborted =
@@ -1452,6 +1477,50 @@ export function ChatApp() {
             <div className="toast-warn" role="status">
               <span aria-hidden="true">⚠</span>
               <span>{errorToast}</span>
+            </div>
+          )}
+
+          {problemAlert && problemAlert.length > 0 && (
+            <div
+              className="problem-alert-mask"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="problem-alert-title"
+            >
+              <div className="problem-alert-card">
+                <div className="problem-alert-head">
+                  <span className="problem-alert-badge" aria-hidden="true">
+                    !
+                  </span>
+                  <h2 id="problem-alert-title">检出异常部件</h2>
+                </div>
+                <p className="problem-alert-lead">
+                  本轮检测发现 {problemAlert.length}{" "}
+                  项存在问题，请现场确认并按检修建议处理。
+                </p>
+                <ul className="problem-alert-list">
+                  {problemAlert.map((p) => (
+                    <li key={p.part}>
+                      <div className="problem-alert-part">{p.part}</div>
+                      {p.desc ? (
+                        <div className="problem-alert-desc">{p.desc}</div>
+                      ) : null}
+                      {p.action ? (
+                        <div className="problem-alert-action">
+                          建议：{p.action}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className="problem-alert-btn"
+                  onClick={() => setProblemAlert(null)}
+                >
+                  已知晓
+                </button>
+              </div>
             </div>
           )}
 
