@@ -351,7 +351,7 @@ export function ChatApp() {
     // 含日期与版本，避免沿用旧缓存里智能体编造的错误日期
     const now = new Date();
     const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-    return `report:v3:${day}:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
+    return `report:v4:${day}:${report.title}:${sig}:e=${report.electrical ? 1 : 0}`;
   }, []);
 
   const generateInspectionPdf = useCallback(

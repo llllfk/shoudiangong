@@ -212,12 +212,23 @@ export async function buildInspectionReportPdf(
     if (report.electrical) {
       sectionTitle("二、电气组（故障排查工单存档）");
       const e = report.electrical;
-      bodyText(`1、故障类型：${e.faultType}`);
-      bodyText(`2、故障现象：${e.phenomenon}`);
-      bodyText(`3、故障猜想：${e.hypothesis}`);
-      bodyText(`4、故障原因：${e.cause}`);
-      bodyText(`5、故障信号：${e.signal}`);
-      bodyText(`6、处理结果：${e.result}`);
+      y = drawTable(
+        doc,
+        y,
+        fontPath,
+        ["项目", "内容"],
+        [88, CONTENT_W - 88],
+        [
+          ["故障类型", cellText(e.faultType) || "—"],
+          ["故障现象", cellText(e.phenomenon) || "—"],
+          ["故障猜想", cellText(e.hypothesis) || "—"],
+          ["故障原因", cellText(e.cause) || "—"],
+          ["故障信号", cellText(e.signal) || "—"],
+          ["处理结果", cellText(e.result) || "—"],
+        ],
+        undefined,
+        160,
+      );
     }
 
     // 页脚：临时取消底边距，并禁止自动换行，避免 pdfkit 再开一页
@@ -255,6 +266,7 @@ function drawTable(
   widths: number[],
   rows: string[][],
   isDangerRow?: (row: string[]) => boolean,
+  maxRowHeight = 72,
 ): number {
   const fontSize = 8;
   const pad = 4;
@@ -273,7 +285,7 @@ function drawTable(
       });
       maxH = Math.max(maxH, h + pad * 2);
     });
-    return Math.min(maxH, 72);
+    return Math.min(maxH, maxRowHeight);
   };
 
   const drawRow = (
