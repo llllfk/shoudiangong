@@ -555,10 +555,24 @@ export type ChatStatusValue =
   | "required_action"
   | "unknown";
 
+export type ChatRetrieveResult = {
+  status: ChatStatusValue;
+  /** 扣子 last_error 文案，failed 时尽量带出原因 */
+  errorMessage?: string;
+};
+
 export async function retrieveChatStatus(
   conversationId: string,
   chatId: string,
 ): Promise<ChatStatusValue> {
+  const detail = await retrieveChatDetail(conversationId, chatId);
+  return detail.status;
+}
+
+export async function retrieveChatDetail(
+  conversationId: string,
+  chatId: string,
+): Promise<ChatRetrieveResult> {
   const retrieveRes = await fetch(
     `${API_BASE}/v3/chat/retrieve?conversation_id=${encodeURIComponent(conversationId)}&chat_id=${encodeURIComponent(chatId)}`,
     { headers: authHeaders(false) },
@@ -570,8 +584,28 @@ export async function retrieveChatStatus(
       retrieveRes.status,
     );
   }
-  const detail = unwrapData<{ status?: string }>(retrieveJson);
-  return (detail.status as ChatStatusValue) || "unknown";
+  const detail = unwrapData<{
+    status?: string;
+    last_error?: {
+      code?: number | string;
+      msg?: string;
+      message?: string;
+    };
+    lastError?: {
+      code?: number | string;
+      msg?: string;
+      message?: string;
+    };
+  }>(retrieveJson);
+
+  const status = (detail.status as ChatStatusValue) || "unknown";
+  const lastErr = detail.last_error || detail.lastError;
+  const errorMessage =
+    (typeof lastErr?.msg === "string" && lastErr.msg.trim()) ||
+    (typeof lastErr?.message === "string" && lastErr.message.trim()) ||
+    undefined;
+
+  return { status, errorMessage };
 }
 
 export interface ChatAnswerResult {

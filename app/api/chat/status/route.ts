@@ -2,10 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   CozeApiError,
   listChatAnswer,
-  retrieveChatStatus,
+  retrieveChatDetail,
 } from "@/lib/coze";
 import { isDatabaseConfigured } from "@/lib/db";
 import { appendMessage, hasAssistantForChat } from "@/lib/history";
+
+function formatChatFailure(
+  status: string,
+  cozeMessage?: string,
+): string {
+  const detail = cozeMessage?.trim();
+  if (detail) {
+    return `对话未正常完成（${status}）：${detail}`;
+  }
+  if (status === "failed") {
+    return "对话未正常完成：智能体本轮执行失败。常见原因：输出过长、超时、知识库/插件异常。请重试本轮，或先完成检测再单独「生成报告」。";
+  }
+  if (status === "required_action") {
+    return "对话未正常完成：需要额外操作（required_action），请检查智能体工具配置后重试。";
+  }
+  return `对话未正常完成: ${status}`;
+}
 
 /**
  * 单次查询对话状态；completed 时拉取 answer 并落库。
@@ -24,7 +41,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const status = await retrieveChatStatus(conversationId, chatId);
+    const { status, errorMessage } = await retrieveChatDetail(
+      conversationId,
+      chatId,
+    );
 
     if (status === "completed") {
       const { answer } = await listChatAnswer(conversationId, chatId);
@@ -65,7 +85,7 @@ export async function GET(request: NextRequest) {
           status,
           conversationId,
           chatId,
-          error: `对话未正常完成: ${status}`,
+          error: formatChatFailure(status, errorMessage),
         },
       });
     }
