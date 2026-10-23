@@ -102,12 +102,39 @@ export async function getLatestConversationId(
 ): Promise<string | null> {
   const result = await query<{ conversation_id: string }>(
     `SELECT conversation_id FROM conversations
-     WHERE user_id = $1
+     WHERE user_id = $1 AND deleted_at IS NULL
      ORDER BY updated_at DESC
      LIMIT 1`,
     [userId],
   );
   return result.rows[0]?.conversation_id || null;
+}
+
+/** 逻辑删除：仅对归属该用户的会话打 deleted_at，消息保留 */
+export async function softDeleteConversation(
+  conversationId: string,
+  userId: string,
+): Promise<boolean> {
+  const result = await query(
+    `UPDATE conversations
+     SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE conversation_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+    [conversationId, userId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function isConversationActive(
+  conversationId: string,
+  userId: string,
+): Promise<boolean> {
+  const result = await query<{ conversation_id: string }>(
+    `SELECT conversation_id FROM conversations
+     WHERE conversation_id = $1 AND user_id = $2 AND deleted_at IS NULL
+     LIMIT 1`,
+    [conversationId, userId],
+  );
+  return result.rows.length > 0;
 }
 
 export interface ConversationSummary {
@@ -141,7 +168,7 @@ export async function listConversations(
          WHERE m.conversation_id = c.conversation_id
        ) AS message_count
      FROM conversations c
-     WHERE c.user_id = $1
+     WHERE c.user_id = $1 AND c.deleted_at IS NULL
      ORDER BY c.updated_at DESC
      LIMIT $2`,
     [userId, limit],

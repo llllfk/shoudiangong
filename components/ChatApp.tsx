@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type MouseEvent,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -470,11 +471,25 @@ export function ChatApp() {
     [loadingHistory, sending, showError],
   );
 
-  /** 快捷指令写入输入框（有文字则追加到后面），不自动发送 */
+  /** 快捷指令写入输入框（有文字则追加到后面），不自动发送；去掉未填 {{占位符}} */
   const applyShortcut = useCallback(
     (sc: ShortcutCommand) => {
       if (sending || loadingHistory) return;
-      const text = (sc.queryTemplate || sc.command || sc.name).trim();
+      const raw = (sc.queryTemplate || sc.command || sc.name).trim();
+      let text = raw
+        .replace(/\{\{[^{}]*\}\}/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!text) text = (sc.name || sc.command || "").trim();
+      // 报告类：用与提示词一致的触发语，避免空模板/仅指令名/未填组件原样提交
+      const isReport =
+        /报告|生成测试/.test(`${sc.name} ${sc.command || ""} ${raw}`);
+      if (
+        isReport &&
+        (!text || text === sc.name || /\{\{/.test(raw))
+      ) {
+        text = "请根据本场已完成的检测结果生成报告";
+      }
       if (!text) return;
       setInput((prev) => {
         const cur = prev.trimEnd();
@@ -585,6 +600,55 @@ export function ChatApp() {
       }
     },
     [activeId, clearPendingImages, loadConversation, sending, showError],
+  );
+
+  const handleDeleteConversation = useCallback(
+    async (conversationId: string, e?: MouseEvent) => {
+      e?.stopPropagation();
+      e?.preventDefault();
+      if (sending || loadingHistory) return;
+      if (!window.confirm("确定删除该对话记录？删除后列表中不再显示。")) {
+        return;
+      }
+      try {
+        const res = await fetch(
+          `/api/conversations?conversationId=${encodeURIComponent(conversationId)}`,
+          { method: "DELETE" },
+        );
+        const json = (await res.json()) as ApiResponse<{ deleted: boolean }>;
+        if (!res.ok || !("data" in json)) {
+          throw new Error(
+            "error" in json ? json.error : "删除对话失败",
+          );
+        }
+        setConversations((prev) =>
+          prev.filter((c) => c.conversationId !== conversationId),
+        );
+        if (
+          activeId === conversationId ||
+          conversationIdRef.current === conversationId
+        ) {
+          conversationIdRef.current = null;
+          setActiveId(null);
+          const opening = createOpeningMessage(prologue);
+          setMessages(opening ? [opening] : []);
+          setInput("");
+          clearPendingImages();
+        }
+        void refreshConversations();
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "删除对话失败");
+      }
+    },
+    [
+      activeId,
+      clearPendingImages,
+      loadingHistory,
+      prologue,
+      refreshConversations,
+      sending,
+      showError,
+    ],
   );
 
   /** 多端不同步时：手动拉取当前/最近一场对话 */
@@ -1214,21 +1278,53 @@ export function ChatApp() {
             {conversations.map((item) => {
               const selected = item.conversationId === activeId;
               return (
-                <button
+                <div
                   key={item.conversationId}
-                  type="button"
-                  disabled={sending || loadingHistory}
-                  onClick={() =>
-                    void handleSelectConversation(item.conversationId)
-                  }
                   className={`side-item${selected ? " is-active" : ""}`}
                 >
-                  <div className="side-item-title">{item.title}</div>
-                  <div className="side-item-meta">
-                    <span>{formatListTime(item.updatedAt)}</span>
-                    <span>{item.messageCount} 条</span>
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    disabled={sending || loadingHistory}
+                    onClick={() =>
+                      void handleSelectConversation(item.conversationId)
+                    }
+                    className="side-item-main"
+                  >
+                    <div className="side-item-title">{item.title}</div>
+                    <div className="side-item-meta">
+                      <span>{formatListTime(item.updatedAt)}</span>
+                      <span>{item.messageCount} 条</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="side-item-delete"
+                    title="删除对话"
+                    aria-label={`删除对话 ${item.title}`}
+                    disabled={sending || loadingHistory}
+                    onClick={(ev) =>
+                      void handleDeleteConversation(item.conversationId, ev)
+                    }
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      <line x1="10" y1="11" x2="10" y2="17" />
+                      <line x1="14" y1="11" x2="14" y2="17" />
+                    </svg>
+                  </button>
+                </div>
               );
             })}
           </div>

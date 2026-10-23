@@ -81,6 +81,47 @@ async function parseJson(res: Response): Promise<unknown> {
   }
 }
 
+/** 去掉未填充的 {{占位符}}，避免快捷指令模板原样提交导致模型/插件参数异常 */
+export function sanitizeUserText(raw?: string): string {
+  if (!raw) return "";
+  return raw
+    .replace(/\{\{[^{}]*\}\}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/** 将扣子/模型失败原文转成可操作的中文提示 */
+export function formatCozeChatFailure(
+  status: string,
+  cozeMessage?: string,
+): string {
+  const detail = cozeMessage?.trim() || "";
+  const lower = detail.toLowerCase();
+
+  if (
+    /input parameters provided to the model are invalid/i.test(detail) ||
+    /invalidparameter/i.test(lower)
+  ) {
+    return (
+      "对话未正常完成：模型拒绝了本轮输入（参数无效）。" +
+      "请改用文字发送「生成报告」重试；若仍失败，到智能体编排页检查是否仍绑定文档生成等插件、快捷指令是否含未填组件，或新建对话后再生成报告。"
+    );
+  }
+
+  if (detail) {
+    return `对话未正常完成（${status}）：${detail}`;
+  }
+  if (status === "failed") {
+    return "对话未正常完成：智能体本轮执行失败。常见原因：输出过长、超时、知识库/插件异常。请重试本轮，或先完成检测再单独「生成报告」。";
+  }
+  if (status === "required_action") {
+    return "对话未正常完成：需要额外操作（required_action），请检查智能体工具配置后重试。";
+  }
+  return `对话未正常完成: ${status}`;
+}
+
 function buildUserMessage(options: {
   text?: string;
   imageUrl?: string;
@@ -98,10 +139,11 @@ function buildUserMessage(options: {
     ...(imageUrl && !(imageUrls || []).includes(imageUrl) ? [imageUrl] : []),
   ];
   const hasImage = ids.length > 0 || urls.length > 0;
+  const cleanText = sanitizeUserText(text);
 
   if (hasImage) {
     const parts: Array<Record<string, string>> = [
-      { type: "text", text: text?.trim() || "检测这个部件" },
+      { type: "text", text: cleanText || "检测这个部件" },
     ];
     if (ids.length > 0) {
       for (const id of ids) {
@@ -119,9 +161,13 @@ function buildUserMessage(options: {
     };
   }
 
+  if (!cleanText) {
+    throw new CozeApiError("消息内容不能为空");
+  }
+
   return {
     role: "user",
-    content: (text || "").trim(),
+    content: cleanText,
     content_type: "text",
   };
 }
@@ -265,15 +311,21 @@ function buildChatRequest(
     conversationId,
     shortcutCommandId,
   } = options;
+  const cleanText = sanitizeUserText(text);
   const hasImage =
     Boolean(imageUrl || fileId) ||
     Boolean(fileIds?.length) ||
     Boolean(imageUrls?.length);
   const hasShortcut = Boolean(shortcutCommandId?.trim());
 
-  if (!text?.trim() && !hasImage && !hasShortcut) {
+  if (!cleanText && !hasImage && !hasShortcut) {
     throw new CozeApiError("请提供文本、图片或快捷指令");
   }
+
+  const normalized: ChatCreateOptions = {
+    ...options,
+    text: cleanText || undefined,
+  };
 
   const body: Record<string, unknown> = {
     bot_id: getBotId(),
@@ -283,15 +335,14 @@ function buildChatRequest(
   };
 
   if (hasShortcut) {
+    // 仅传 command_id；带组件参数的快捷指令需由调用方显式传 parameters。
+    // 不传空的 additional_messages，避免 content="" 触发参数校验失败。
     body.shortcut_command = { command_id: shortcutCommandId!.trim() };
-    // 快捷指令由平台生成用户输入；若同时有图/文则一并附上
-    if (text?.trim() || hasImage) {
-      body.additional_messages = [buildUserMessage(options)];
-    } else {
-      body.additional_messages = [];
+    if (cleanText || hasImage) {
+      body.additional_messages = [buildUserMessage(normalized)];
     }
   } else {
-    body.additional_messages = [buildUserMessage(options)];
+    body.additional_messages = [buildUserMessage(normalized)];
   }
 
   let url = `${API_BASE}/v3/chat`;
@@ -457,13 +508,14 @@ export async function* iterateCozeChatStream(
           const lastError = data.last_error as
             | { msg?: string; message?: string }
             | undefined;
+          const raw =
+            lastError?.msg ||
+            lastError?.message ||
+            (typeof data.msg === "string" ? data.msg : "") ||
+            "";
           yield {
             kind: "error",
-            message:
-              lastError?.msg ||
-              lastError?.message ||
-              (typeof data.msg === "string" ? data.msg : "") ||
-              "流式对话失败",
+            message: formatCozeChatFailure("failed", raw || undefined),
           };
           continue;
         }

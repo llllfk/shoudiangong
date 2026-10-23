@@ -75,12 +75,14 @@ export async function ensureSchema(): Promise<void> {
 
         ALTER TABLE messages ADD COLUMN IF NOT EXISTS coze_chat_id VARCHAR(128);
         ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning TEXT;
+        ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
           ON messages (conversation_id, created_at);
 
         CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
-          ON conversations (user_id, updated_at DESC);
+          ON conversations (user_id, updated_at DESC)
+          WHERE deleted_at IS NULL;
       `);
     })().catch((err) => {
       schemaReady = null;
