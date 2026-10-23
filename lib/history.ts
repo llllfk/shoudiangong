@@ -1,5 +1,4 @@
 import { query } from "@/lib/db";
-import { getPresignedGetUrl, isStorageConfigured } from "@/lib/storage";
 
 export interface StoredMessage {
   id: string;
@@ -212,19 +211,14 @@ export async function listMessages(
   for (const row of result.rows) {
     const uris = decodeMultiValue(row.image_uri);
     const fallbackUrls = decodeMultiValue(row.image_url);
-    const signedUrls: string[] = [];
-
-    if (uris.length > 0 && isStorageConfigured()) {
-      for (let i = 0; i < uris.length; i++) {
-        try {
-          signedUrls.push(await getPresignedGetUrl(uris[i]));
-        } catch {
-          if (fallbackUrls[i]) signedUrls.push(fallbackUrls[i]);
-        }
-      }
-    } else {
-      signedUrls.push(...fallbackUrls);
-    }
+    // 优先同域代理，避免手机 WebView 打不开外部临时签链（多图时表现为「图都没了」）
+    const viewUrls: string[] =
+      uris.length > 0
+        ? uris.map(
+            (uri) =>
+              `/api/documents/file?uri=${encodeURIComponent(uri)}`,
+          )
+        : fallbackUrls;
 
     messages.push({
       id: row.id,
@@ -232,8 +226,8 @@ export async function listMessages(
       content: row.content,
       reasoning: row.reasoning,
       imageUri: row.image_uri,
-      imageUrl: signedUrls[0] || null,
-      imageUrls: signedUrls.length > 0 ? signedUrls : undefined,
+      imageUrl: viewUrls[0] || null,
+      imageUrls: viewUrls.length > 0 ? viewUrls : undefined,
       cozeFileId: row.coze_file_id,
       createdAt: new Date(row.created_at).toISOString(),
     });

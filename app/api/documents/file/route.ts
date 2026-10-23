@@ -32,11 +32,21 @@ export async function GET(request: NextRequest) {
       filename = requested.replace(/[\\"\r\n]/g, "_");
     }
 
-    // 按扩展名纠正 MIME，避免上游 octet-stream 导致手机直接下载
+    // 按扩展名纠正 MIME，避免上游 octet-stream 导致手机直接下载 / 图片空白
     let contentType = obj.contentType || "application/octet-stream";
     if (/\.pdf$/i.test(filename) || contentType.toLowerCase().includes("pdf")) {
       contentType = "application/pdf";
       if (!/\.pdf$/i.test(filename)) filename = `${filename}.pdf`;
+    } else if (/\.png$/i.test(filename)) {
+      contentType = "image/png";
+    } else if (/\.webp$/i.test(filename)) {
+      contentType = "image/webp";
+    } else if (/\.gif$/i.test(filename)) {
+      contentType = "image/gif";
+    } else if (/\.jpe?g$/i.test(filename) || contentType.startsWith("image/")) {
+      contentType = contentType.startsWith("image/")
+        ? contentType
+        : "image/jpeg";
     } else if (/\.txt$/i.test(filename)) {
       contentType = "text/plain; charset=utf-8";
     } else if (/\.csv$/i.test(filename)) {

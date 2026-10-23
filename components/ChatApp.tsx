@@ -848,6 +848,8 @@ export function ChatApp() {
       const fileIds: string[] = [];
       const imageUris: string[] = [];
       const imageUrls: string[] = [];
+      /** 气泡预览：优先同域代理，避免手机端外部签链空白 */
+      const previewUrls: string[] = [];
 
       for (let i = 0; i < imageFiles.length; i++) {
         throwIfAborted();
@@ -878,20 +880,26 @@ export function ChatApp() {
         fileIds.push(uploadJson.data.fileId);
         if (uploadJson.data.imageUri) {
           imageUris.push(uploadJson.data.imageUri);
+          previewUrls.push(
+            `/api/documents/file?uri=${encodeURIComponent(uploadJson.data.imageUri)}`,
+          );
         }
         if (uploadJson.data.imageUrl) {
           imageUrls.push(uploadJson.data.imageUrl);
+          if (!uploadJson.data.imageUri) {
+            previewUrls.push(uploadJson.data.imageUrl);
+          }
         }
       }
 
-      if (imageUrls.length > 0) {
+      if (previewUrls.length > 0) {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === userMsg.id
               ? {
                   ...m,
-                  imagePreviewUrl: imageUrls[0],
-                  imagePreviewUrls: imageUrls,
+                  imagePreviewUrl: previewUrls[0],
+                  imagePreviewUrls: previewUrls,
                 }
               : m,
           ),
@@ -2044,13 +2052,27 @@ function MessageBubbleBody({
       <div className="msg-stack">
       <div className={`msg-bubble${isUser ? " is-user" : ""}`}>
         {previewImages.length > 0 && (
-          <div className="msg-images">
+          <div
+            className={`msg-images${previewImages.length >= 6 ? " is-dense" : ""}`}
+          >
+            <div className="msg-images-caption">
+              共 {previewImages.length} 张照片
+            </div>
             {previewImages.map((url, index) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 key={`${url}-${index}`}
                 src={url}
                 alt={`部件照片 ${index + 1}`}
+                loading="lazy"
+                onError={(e) => {
+                  const el = e.currentTarget;
+                  el.style.display = "none";
+                  const ph = document.createElement("div");
+                  ph.className = "msg-image-fallback";
+                  ph.textContent = `图${index + 1}`;
+                  el.parentElement?.insertBefore(ph, el);
+                }}
               />
             ))}
           </div>
