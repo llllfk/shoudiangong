@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 import {
+  normalizeElectrical,
   normalizePerformanceRow,
   resolveReportMeta,
   type InspectionReport,
@@ -209,25 +210,35 @@ export async function buildInspectionReportPdf(
     }
 
     // —— 二、电气组 ——
-    if (report.electrical) {
+    // 六列表头 + 两行数据（固定两条故障记录）
+    const electricalRows = normalizeElectrical(report.electrical);
+    if (electricalRows) {
       sectionTitle("二、电气组（故障排查工单存档）");
-      const e = report.electrical;
+      const elecCol = Math.floor(CONTENT_W / 6);
+      const elecWidths = [
+        elecCol,
+        elecCol,
+        elecCol,
+        elecCol,
+        elecCol,
+        CONTENT_W - elecCol * 5,
+      ];
       y = drawTable(
         doc,
         y,
         fontPath,
-        ["项目", "内容"],
-        [88, CONTENT_W - 88],
-        [
-          ["故障类型", cellText(e.faultType) || "—"],
-          ["故障现象", cellText(e.phenomenon) || "—"],
-          ["故障猜想", cellText(e.hypothesis) || "—"],
-          ["故障原因", cellText(e.cause) || "—"],
-          ["故障信号", cellText(e.signal) || "—"],
-          ["处理结果", cellText(e.result) || "—"],
-        ],
+        ["故障类型", "故障现象", "故障猜想", "故障原因", "故障信号", "处理结果"],
+        elecWidths,
+        electricalRows.map((e) => [
+          cellText(e.faultType) || "—",
+          cellText(e.phenomenon) || "—",
+          cellText(e.hypothesis) || "—",
+          cellText(e.cause) || "—",
+          cellText(e.signal) || "—",
+          cellText(e.result) || "—",
+        ]),
         undefined,
-        160,
+        200,
       );
     }
 

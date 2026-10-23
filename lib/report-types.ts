@@ -76,6 +76,22 @@ export type ElectricalBlock = {
   result: string;
 };
 
+/**
+ * 兼容旧版单对象 electrical；规范为数组（工单固定 2 条故障）。
+ */
+export function normalizeElectrical(
+  electrical: ElectricalBlock | ElectricalBlock[] | null | undefined,
+): ElectricalBlock[] | null {
+  if (electrical == null) return null;
+  if (Array.isArray(electrical)) {
+    return electrical.length > 0 ? electrical : null;
+  }
+  if (typeof electrical === "object") {
+    return [electrical];
+  }
+  return null;
+}
+
 export type ReportMeta = {
   /** 场次号（由智能体 JSON 传入） */
   sessionNo?: string | number;
@@ -100,7 +116,8 @@ export type InspectionReport = {
     };
     suggestions: string[];
   };
-  electrical: ElectricalBlock | null;
+  /** 故障排查工单；有存档时为 2 条记录的数组，否则 null。兼容旧版单对象。 */
+  electrical: ElectricalBlock[] | ElectricalBlock | null;
 };
 
 /**
@@ -132,8 +149,12 @@ export function isInspectionReport(value: unknown): value is InspectionReport {
   if (!Array.isArray(m.performance) || m.performance.length < 1) return false;
   if (!m.analysis || typeof m.analysis !== "object") return false;
   if (!Array.isArray(m.suggestions)) return false;
-  if (v.electrical !== null && (typeof v.electrical !== "object" || !v.electrical)) {
-    return false;
+  if (v.electrical !== null) {
+    if (Array.isArray(v.electrical)) {
+      if (v.electrical.length < 1) return false;
+    } else if (typeof v.electrical !== "object" || !v.electrical) {
+      return false;
+    }
   }
   const first = m.appearance[0] as Record<string, unknown> | undefined;
   if (!first || typeof first.part !== "string" || typeof first.result !== "string") {
