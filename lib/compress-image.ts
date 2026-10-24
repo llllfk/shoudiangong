@@ -3,9 +3,10 @@
  * 输出 JPEG（部件外观图不需要透明通道）。
  */
 
-const DEFAULT_MAX_EDGE = 1600;
-const DEFAULT_MAX_BYTES = 1.2 * 1024 * 1024;
-const DEFAULT_QUALITY = 0.82;
+/** 偏小以加快平板上行；外观检测仍够用 */
+const DEFAULT_MAX_EDGE = 1280;
+const DEFAULT_MAX_BYTES = 800 * 1024;
+const DEFAULT_QUALITY = 0.78;
 
 function replaceExtWithJpg(name: string): string {
   const base = name.replace(/\.[^.]+$/, "") || "part";
@@ -102,7 +103,7 @@ export async function compressImageFile(
     if (blob.size > maxBytes) {
       const scale2 = Math.min(
         1,
-        1280 / Math.max(bitmap.width, bitmap.height),
+        1024 / Math.max(bitmap.width, bitmap.height),
       );
       const w2 = Math.max(1, Math.round(bitmap.width * scale2));
       const h2 = Math.max(1, Math.round(bitmap.height * scale2));

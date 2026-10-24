@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { CozeApiError, getUserId, uploadFile } from "@/lib/coze";
 import {
   addDraftImage,
@@ -6,6 +6,7 @@ import {
   countDraftImages,
   deleteDraftImage,
   listDraftImages,
+  updateDraftImageStorage,
 } from "@/lib/draft-images";
 import { isDatabaseConfigured } from "@/lib/db";
 import {
@@ -19,7 +20,7 @@ const MAX_DRAFT_IMAGES = 20;
 /**
  * 多端待发照片：
  * GET  列表
- * POST 上传并加入待发队列（平板拍完即入队，电脑可拉取后发送）
+ * POST 先传扣子拿 file_id 立刻入队；对象存储后台补写（加快平板回包）
  * DELETE ?id= 删一张；无 id 则清空
  */
 export async function GET() {
@@ -73,31 +74,45 @@ export async function POST(request: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const filename = file.name || "part.jpg";
+    const contentType = file.type || "image/jpeg";
+
+    // 对话只要 file_id：先完成扣子上传并入队，尽快返回
     const fileId = await uploadFile(
-      new Blob([new Uint8Array(buffer)], {
-        type: file.type || "image/jpeg",
-      }),
+      new Blob([new Uint8Array(buffer)], { type: contentType }),
       filename,
     );
-
-    let imageUri: string | undefined;
-    let imageUrl: string | undefined;
-    if (isStorageConfigured()) {
-      const uploaded = await uploadImageObject(buffer, {
-        contentType: file.type || "image/jpeg",
-        filename,
-      });
-      imageUri = uploaded.uri;
-      imageUrl = await getPresignedGetUrl(uploaded.uri);
-    }
 
     const image = await addDraftImage({
       userId,
       fileId,
-      imageUri,
-      imageUrl,
       filename,
     });
+
+    // 对象存储延后：不阻塞回包；电脑轮询稍后能拿到预览
+    if (isStorageConfigured()) {
+      const draftId = image.id;
+      const bufCopy = Buffer.from(buffer);
+      after(async () => {
+        try {
+          const uploaded = await uploadImageObject(bufCopy, {
+            contentType,
+            filename,
+          });
+          const imageUrl = await getPresignedGetUrl(uploaded.uri);
+          await updateDraftImageStorage({
+            userId,
+            id: draftId,
+            imageUri: uploaded.uri,
+            imageUrl,
+          });
+        } catch (err) {
+          console.error(
+            "[draft-images] background storage upload failed:",
+            err instanceof Error ? err.message : err,
+          );
+        }
+      });
+    }
 
     return NextResponse.json({ data: { image } });
   } catch (error) {

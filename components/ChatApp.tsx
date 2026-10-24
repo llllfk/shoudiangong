@@ -45,7 +45,7 @@ import {
   parseInspectionBlocks,
 } from "@/lib/format-assistant-md";
 import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
-import { createId } from "@/lib/utils";
+import { createId, mapPool } from "@/lib/utils";
 import type {
   ApiResponse,
   ChatMessage,
@@ -238,6 +238,8 @@ export function ChatApp() {
   const syncBusyRef = useRef(false);
   const messagesSigRef = useRef("");
   const problemAlertKeyRef = useRef("");
+  /** true=跟最新一场（投屏）；点历史/新建后为 false，避免被同步拽回第一条 */
+  const followLatestRef = useRef(true);
   const draftsSigRef = useRef("");
   const draftBusyRef = useRef(false);
 
@@ -341,10 +343,16 @@ export function ChatApp() {
         if (cancelled || !histRes.ok || !("data" in histJson)) return;
 
         if (histJson.data.conversationId) {
+          followLatestRef.current = true;
           conversationIdRef.current = histJson.data.conversationId;
           setActiveId(histJson.data.conversationId);
-          setMessages(mapHistoryMessages(histJson.data.messages));
+          const mapped = mapHistoryMessages(histJson.data.messages);
+          messagesSigRef.current = `${histJson.data.conversationId}:${mapped
+            .map((m) => `${m.id}:${m.role}:${m.content.length}`)
+            .join("|")}`;
+          setMessages(mapped);
         } else {
+          followLatestRef.current = true;
           const opening = createOpeningMessage(openingText);
           setMessages(opening ? [opening] : []);
         }
@@ -579,7 +587,10 @@ export function ChatApp() {
       if (!res.ok || !("data" in json)) return;
       setDraftAvailable(json.data.available !== false);
       const images = json.data.images || [];
-      const sig = images.map((d) => d.id).join(",");
+      // 含 imageUri：S3 后台补写完成后能刷新缩略图
+      const sig = images
+        .map((d) => `${d.id}:${d.imageUri || ""}`)
+        .join("|");
       if (sig === draftsSigRef.current) return;
       draftsSigRef.current = sig;
       setSharedDrafts(images);
@@ -655,7 +666,8 @@ export function ChatApp() {
         }
 
         setDraftUploading((n) => n + toUpload.length);
-        for (const file of toUpload) {
+        // 并行上传（最多 3 路），缩短多图总等待
+        await mapPool(toUpload, 3, async (file) => {
           try {
             const compressed = await compressImageFile(file);
             const form = new FormData();
@@ -675,7 +687,9 @@ export function ChatApp() {
             setSharedDrafts((prev) => {
               if (prev.some((d) => d.id === json.data.image.id)) return prev;
               const next = [...prev, json.data.image];
-              draftsSigRef.current = next.map((d) => d.id).join(",");
+              draftsSigRef.current = next
+                .map((d) => `${d.id}:${d.imageUri || ""}`)
+                .join("|");
               return next;
             });
           } catch (err) {
@@ -685,7 +699,7 @@ export function ChatApp() {
           } finally {
             setDraftUploading((n) => Math.max(0, n - 1));
           }
-        }
+        });
         window.setTimeout(() => textInputRef.current?.focus(), 0);
       })();
     },
@@ -756,7 +770,9 @@ export function ChatApp() {
           }
           setSharedDrafts((prev) => {
             const next = prev.filter((d) => d.id !== draftId);
-            draftsSigRef.current = next.map((d) => d.id).join(",");
+            draftsSigRef.current = next
+              .map((d) => `${d.id}:${d.imageUri || ""}`)
+              .join("|");
             return next;
           });
         } catch (err) {
@@ -831,8 +847,10 @@ export function ChatApp() {
   const handleNewSession = useCallback(() => {
     if (sending) return;
     stopSpeechPlayback();
+    followLatestRef.current = false;
     conversationIdRef.current = null;
     setActiveId(null);
+    messagesSigRef.current = "";
     const opening = createOpeningMessage(prologue);
     setMessages(opening ? [opening] : []);
     setInput("");
@@ -849,6 +867,8 @@ export function ChatApp() {
         return;
       }
       try {
+        // 手动点历史：钉住该场，定时同步不再强行切回最新
+        followLatestRef.current = false;
         await loadConversation(conversationId);
         setInput("");
         clearPendingImages();
@@ -886,8 +906,10 @@ export function ChatApp() {
           activeId === conversationId ||
           conversationIdRef.current === conversationId
         ) {
+          followLatestRef.current = false;
           conversationIdRef.current = null;
           setActiveId(null);
+          messagesSigRef.current = "";
           const opening = createOpeningMessage(prologue);
           setMessages(opening ? [opening] : []);
           setInput("");
@@ -920,15 +942,37 @@ export function ChatApp() {
   }, []);
 
   /**
-   * 多端同步：始终拉「最近一场」对话。
-   * 平板拍照发送后，投屏电脑可自动跟上同一会话（含异常强提醒）。
+   * 多端同步：
+   * - 跟最新（默认/顶栏刷新）：拉最近一场，投屏可跟上平板
+   * - 已点进历史或新建：只同步当前 conversationId，不拽回第一条
    */
   const syncFromServer = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean; forceLatest?: boolean }) => {
       if (sending || loadingHistory || syncBusyRef.current) return;
       syncBusyRef.current = true;
       try {
-        const histRes = await fetch("/api/history");
+        if (opts?.forceLatest) {
+          followLatestRef.current = true;
+        }
+
+        // 新建空白页且不跟最新：只刷侧栏列表
+        if (
+          !followLatestRef.current &&
+          !conversationIdRef.current &&
+          !opts?.forceLatest
+        ) {
+          void refreshConversations();
+          return;
+        }
+
+        const pinnedId = conversationIdRef.current;
+        const useLatest =
+          followLatestRef.current || opts?.forceLatest || !pinnedId;
+        const histRes = await fetch(
+          useLatest
+            ? "/api/history"
+            : `/api/history?conversationId=${encodeURIComponent(pinnedId!)}`,
+        );
         const histJson =
           (await histRes.json()) as ApiResponse<HistoryResult>;
         if (!histRes.ok || !("data" in histJson)) {
@@ -956,11 +1000,14 @@ export function ChatApp() {
         setMessages(mapped);
         void refreshConversations();
 
-        const lastAsst = [...mapped]
-          .reverse()
-          .find((m) => m.role === "assistant");
-        if (lastAsst) {
-          maybeAlertProblems(lastAsst.content);
+        // 强提醒仅在「跟最新」时弹，避免翻历史反复弹
+        if (followLatestRef.current || opts?.forceLatest) {
+          const lastAsst = [...mapped]
+            .reverse()
+            .find((m) => m.role === "assistant");
+          if (lastAsst) {
+            maybeAlertProblems(lastAsst.content);
+          }
         }
       } catch (err) {
         if (!opts?.silent) {
@@ -973,9 +1020,9 @@ export function ChatApp() {
     [loadingHistory, maybeAlertProblems, refreshConversations, sending, showError],
   );
 
-  /** 顶栏刷新：立即同步最近一场 */
+  /** 顶栏刷新：恢复跟最新一场并立即同步 */
   const handleRefreshConversation = useCallback(async () => {
-    await syncFromServer({ silent: false });
+    await syncFromServer({ silent: false, forceLatest: true });
   }, [syncFromServer]);
 
   // 投屏电脑 / 多端：定时拉最近对话；回到前台立刻同步
@@ -1122,43 +1169,50 @@ export function ChatApp() {
         }
       }
 
-      for (let i = 0; i < imageFiles.length; i++) {
-        throwIfAborted();
-        const imageFile = imageFiles[i];
+      if (imageFiles.length > 0) {
         setHintStatus(
           imageFiles.length > 1
-            ? `正在上传照片 ${i + 1}/${imageFiles.length}…`
+            ? `正在并行上传 ${imageFiles.length} 张照片…`
             : "正在上传照片…",
         );
-        const compressed = await compressImageFile(imageFile);
-        throwIfAborted();
-        const form = new FormData();
-        form.append("file", compressed);
-        const uploadRes = await fetch("/api/upload", {
-          method: "POST",
-          body: form,
-          signal: ac.signal,
+        const uploaded = await mapPool(imageFiles, 3, async (imageFile, i) => {
+          throwIfAborted();
+          const compressed = await compressImageFile(imageFile);
+          throwIfAborted();
+          const form = new FormData();
+          form.append("file", compressed);
+          // 发送落库需要 image_uri：服务端并行传扣子+S3
+          form.append("waitStorage", "1");
+          const uploadRes = await fetch("/api/upload", {
+            method: "POST",
+            body: form,
+            signal: ac.signal,
+          });
+          const uploadJson =
+            (await uploadRes.json()) as ApiResponse<UploadResult>;
+          if (!uploadRes.ok || !("data" in uploadJson)) {
+            throw new Error(
+              "error" in uploadJson
+                ? uploadJson.error
+                : `第 ${i + 1} 张图片上传失败，请重试本轮`,
+            );
+          }
+          return uploadJson.data;
         });
-        const uploadJson =
-          (await uploadRes.json()) as ApiResponse<UploadResult>;
-        if (!uploadRes.ok || !("data" in uploadJson)) {
-          throw new Error(
-            "error" in uploadJson
-              ? uploadJson.error
-              : "图片上传失败，请重试本轮",
-          );
-        }
-        fileIds.push(uploadJson.data.fileId);
-        if (uploadJson.data.imageUri) {
-          imageUris.push(uploadJson.data.imageUri);
-          previewUrls.push(
-            `/api/documents/file?uri=${encodeURIComponent(uploadJson.data.imageUri)}`,
-          );
-        }
-        if (uploadJson.data.imageUrl) {
-          imageUrls.push(uploadJson.data.imageUrl);
-          if (!uploadJson.data.imageUri) {
-            previewUrls.push(uploadJson.data.imageUrl);
+
+        for (const item of uploaded) {
+          fileIds.push(item.fileId);
+          if (item.imageUri) {
+            imageUris.push(item.imageUri);
+            previewUrls.push(
+              `/api/documents/file?uri=${encodeURIComponent(item.imageUri)}`,
+            );
+          }
+          if (item.imageUrl) {
+            imageUrls.push(item.imageUrl);
+            if (!item.imageUri) {
+              previewUrls.push(item.imageUrl);
+            }
           }
         }
       }
@@ -2099,7 +2153,7 @@ function AppHeader({
           <button
             type="button"
             aria-label="刷新对话"
-            title="同步最近一场对话（投屏端会自动同步）"
+            title="同步并回到最近一场对话"
             onClick={onRefresh}
             disabled={refreshDisabled || refreshing}
             className="icon-btn header-refresh-btn"

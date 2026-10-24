@@ -93,3 +93,24 @@ export async function clearDraftImages(userId: string): Promise<number> {
   );
   return rowCount ?? 0;
 }
+
+/** 后台补写对象存储地址（S3 延后上传完成后调用） */
+export async function updateDraftImageStorage(params: {
+  userId: string;
+  id: string;
+  imageUri: string;
+  imageUrl?: string;
+}): Promise<boolean> {
+  const { rowCount } = await query(
+    `UPDATE draft_images
+     SET image_uri = $3, image_url = $4
+     WHERE user_id = $1 AND id = $2`,
+    [
+      params.userId,
+      params.id,
+      params.imageUri,
+      params.imageUrl || null,
+    ],
+  );
+  return (rowCount ?? 0) > 0;
+}
