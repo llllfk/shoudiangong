@@ -39,6 +39,10 @@ import {
   type SpeakPhase,
 } from "@/lib/speech";
 import { buildAnalysisLines } from "@/lib/analysis-trace";
+import {
+  formatAssistantMarkdown,
+  hasInspectionFields,
+} from "@/lib/format-assistant-md";
 import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
 import { createId } from "@/lib/utils";
 import type {
@@ -1735,47 +1739,19 @@ export function ChatApp() {
           )}
 
           {problemAlert && problemAlert.length > 0 && (
-            <div
-              className="problem-alert-mask"
-              role="alertdialog"
-              aria-modal="true"
-              aria-labelledby="problem-alert-title"
-            >
-              <div className="problem-alert-card">
-                <div className="problem-alert-head">
-                  <span className="problem-alert-badge" aria-hidden="true">
-                    !
-                  </span>
-                  <h2 id="problem-alert-title">检出异常部件</h2>
-                </div>
-                <p className="problem-alert-lead">
-                  本轮检测发现 {problemAlert.length}{" "}
-                  项存在问题，请现场确认并按检修建议处理。
-                </p>
-                <ul className="problem-alert-list">
-                  {problemAlert.map((p) => (
-                    <li key={p.part}>
-                      <div className="problem-alert-part">{p.part}</div>
-                      {p.desc ? (
-                        <div className="problem-alert-desc">{p.desc}</div>
-                      ) : null}
-                      {p.action ? (
-                        <div className="problem-alert-action">
-                          建议：{p.action}
-                        </div>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  type="button"
-                  className="problem-alert-btn"
-                  onClick={() => setProblemAlert(null)}
-                >
-                  已知晓
-                </button>
-              </div>
-            </div>
+            <ProblemAlertDialog
+              problems={problemAlert}
+              onClose={() => {
+                stopSpeechPlayback();
+                setProblemAlert(null);
+              }}
+              onSpeechError={(msg) =>
+                showError(
+                  msg ||
+                    "豆包朗读失败。请确认 BOT_PAT 已开通 createSpeech",
+                )
+              }
+            />
           )}
 
           <div ref={listRef} className="msg-list">
@@ -1832,15 +1808,23 @@ export function ChatApp() {
                     />
                     {/* 流式正文：有增量即打印；异常强提醒等整段结束后再弹 */}
                     {liveAnswer.trim() ? (
-                      <div className="chat-md is-streaming">
+                      <div
+                        className={`chat-md is-streaming${
+                          hasInspectionFields(liveAnswer)
+                            ? " is-inspection"
+                            : ""
+                        }`}
+                      >
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
                           components={{
                             img: () => null,
                           }}
                         >
-                          {stripAssistantImages(
-                            stripStreamingReportJson(liveAnswer),
+                          {formatAssistantMarkdown(
+                            stripAssistantImages(
+                              stripStreamingReportJson(liveAnswer),
+                            ),
                           )}
                         </ReactMarkdown>
                       </div>
@@ -2184,6 +2168,126 @@ function plainTextForSpeech(content: string): string {
     .trim();
 }
 
+/** 强提醒弹窗朗读文案 */
+function buildProblemAlertSpeech(problems: ProblemPart[]): string {
+  const body = problems
+    .map((p, i) => {
+      const bits = [
+        `异常${i + 1}：${p.part}`,
+        p.desc ? `现象：${p.desc}` : "",
+        p.action ? `建议：${p.action}` : "",
+      ].filter(Boolean);
+      return bits.join("。");
+    })
+    .join("。");
+  return `检出异常部件${problems.length}项。${body}。请现场确认并按检修建议处理。`;
+}
+
+function ProblemAlertDialog({
+  problems,
+  onClose,
+  onSpeechError,
+}: {
+  problems: ProblemPart[];
+  onClose: () => void;
+  onSpeechError?: (message: string) => void;
+}) {
+  const speechText = buildProblemAlertSpeech(problems);
+  const { active, preparing, playing, toggle } = useSpeechPlayback(
+    "problem-alert",
+    speechText,
+    onSpeechError,
+  );
+
+  return (
+    <div
+      className="problem-alert-mask"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="problem-alert-title"
+    >
+      <div className="problem-alert-card">
+        <div className="problem-alert-head">
+          <span className="problem-alert-badge" aria-hidden="true">
+            !
+          </span>
+          <h2 id="problem-alert-title">检出异常部件</h2>
+        </div>
+        <p className="problem-alert-lead">
+          本轮检测发现 {problems.length}{" "}
+          项存在问题，请现场确认并按检修建议处理。
+        </p>
+        <ul className="problem-alert-list">
+          {problems.map((p) => (
+            <li key={p.part}>
+              <div className="problem-alert-part">{p.part}</div>
+              {p.desc ? (
+                <div className="problem-alert-desc">{p.desc}</div>
+              ) : null}
+              {p.action ? (
+                <div className="problem-alert-action">建议：{p.action}</div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        <div className="problem-alert-actions">
+          <button
+            type="button"
+            className={`problem-alert-speak${playing || active ? " is-on" : ""}`}
+            onClick={toggle}
+            aria-pressed={active}
+            aria-label={
+              preparing
+                ? "正在合成，点击取消"
+                : playing || active
+                  ? "结束播报"
+                  : "语音播报"
+            }
+            title={
+              preparing
+                ? "正在合成，点击取消"
+                : playing || active
+                  ? "结束播报"
+                  : "语音播报"
+            }
+          >
+            {preparing ? (
+              <span className="spinner" aria-hidden="true" />
+            ) : (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                {playing || active ? (
+                  <path d="M6 6h4v12H6zM14 6h4v12h-4z" />
+                ) : (
+                  <>
+                    <path d="M11 5L6 9H3v6h3l5 4V5z" />
+                    <path d="M15.5 8.5a4 4 0 010 7M18 6a7 7 0 010 12" />
+                  </>
+                )}
+              </svg>
+            )}
+            <span>{playing || active ? "结束播报" : "语音播报"}</span>
+          </button>
+          <button
+            type="button"
+            className="problem-alert-btn"
+            onClick={onClose}
+          >
+            已知晓
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type SpeechListener = (id: string | null) => void;
 let speakingMessageId: string | null = null;
 const speechListeners = new Set<SpeechListener>();
@@ -2489,7 +2593,11 @@ function MessageBubbleBody({
               </div>
             ) : null}
             {displayContent.trim() ? (
-              <div className="chat-md">
+              <div
+                className={`chat-md${
+                  hasInspectionFields(displayContent) ? " is-inspection" : ""
+                }`}
+              >
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
@@ -2526,7 +2634,9 @@ function MessageBubbleBody({
                     img: () => null,
                   }}
                 >
-                  {stripAssistantImages(displayContent)}
+                  {formatAssistantMarkdown(
+                    stripAssistantImages(displayContent),
+                  )}
                 </ReactMarkdown>
               </div>
             ) : null}
