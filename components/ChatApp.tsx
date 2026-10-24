@@ -7,6 +7,7 @@ import {
   useState,
   type ClipboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -40,8 +41,8 @@ import {
 } from "@/lib/speech";
 import { buildAnalysisLines } from "@/lib/analysis-trace";
 import {
-  formatAssistantMarkdown,
   hasInspectionFields,
+  parseInspectionBlocks,
 } from "@/lib/format-assistant-md";
 import { sanitizeReasoning } from "@/lib/sanitize-reasoning";
 import { createId } from "@/lib/utils";
@@ -1808,26 +1809,12 @@ export function ChatApp() {
                     />
                     {/* 流式正文：有增量即打印；异常强提醒等整段结束后再弹 */}
                     {liveAnswer.trim() ? (
-                      <div
-                        className={`chat-md is-streaming${
-                          hasInspectionFields(liveAnswer)
-                            ? " is-inspection"
-                            : ""
-                        }`}
-                      >
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            img: () => null,
-                          }}
-                        >
-                          {formatAssistantMarkdown(
-                            stripAssistantImages(
-                              stripStreamingReportJson(liveAnswer),
-                            ),
-                          )}
-                        </ReactMarkdown>
-                      </div>
+                      <AssistantContent
+                        content={stripAssistantImages(
+                          stripStreamingReportJson(liveAnswer),
+                        )}
+                        streaming
+                      />
                     ) : null}
                   </div>
                   <div className="msg-meta">
@@ -2197,6 +2184,7 @@ function ProblemAlertDialog({
     "problem-alert",
     speechText,
     onSpeechError,
+    { autoPlay: true },
   );
 
   return (
@@ -2310,9 +2298,11 @@ function useSpeechPlayback(
   messageId: string,
   text: string,
   onSpeechError?: (message: string) => void,
+  options?: { autoPlay?: boolean },
 ) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [phase, setPhase] = useState<SpeakPhase | "idle">("idle");
+  const autoPlay = Boolean(options?.autoPlay);
 
   useEffect(() => {
     const listener: SpeechListener = (id) => {
@@ -2326,19 +2316,19 @@ function useSpeechPlayback(
     };
   }, [messageId]);
 
-  const active = activeId === messageId;
-  const toggle = useCallback(() => {
-    if (speakingMessageId === messageId) {
-      stopSpeechPlayback();
-      setPhase("idle");
-      return;
-    }
+  const start = useCallback(() => {
+    if (speakingMessageId === messageId) return;
     if (!canSpeak()) {
       onSpeechError?.("当前环境无法播放音频");
       return;
     }
     const content = text.trim();
     if (!content) return;
+
+    // 打断其它朗读，改播本段
+    if (speakingMessageId != null) {
+      stopSpeechPlayback();
+    }
 
     speakingMessageId = messageId;
     notifySpeechListeners();
@@ -2362,6 +2352,31 @@ function useSpeechPlayback(
         setPhase("idle");
       });
   }, [messageId, onSpeechError, text]);
+
+  const active = activeId === messageId;
+  const toggle = useCallback(() => {
+    if (speakingMessageId === messageId) {
+      stopSpeechPlayback();
+      setPhase("idle");
+      return;
+    }
+    start();
+  }, [messageId, start]);
+
+  const startRef = useRef(start);
+  startRef.current = start;
+
+  // 强提醒等：弹出即自动播报；关闭/卸载时停止（不依赖 start 引用，避免重渲染打断）
+  useEffect(() => {
+    if (!autoPlay) return;
+    const timer = window.setTimeout(() => startRef.current(), 280);
+    return () => {
+      window.clearTimeout(timer);
+      if (speakingMessageId === messageId) {
+        stopSpeechPlayback();
+      }
+    };
+  }, [autoPlay, messageId]);
 
   return {
     active,
@@ -2399,6 +2414,125 @@ function MessageBubble({
       reportBusy={reportBusy}
       onSpeechError={onSpeechError}
     />
+  );
+}
+
+function markdownLinkComponents(options?: {
+  onOpenDocument?: (url: string, title?: string) => void;
+  busyDocUrl?: string | null;
+}) {
+  return {
+    a: ({
+      href,
+      children,
+    }: {
+      href?: string;
+      children?: ReactNode;
+    }) => {
+      const url = typeof href === "string" ? href : "";
+      const label =
+        typeof children === "string"
+          ? children
+          : Array.isArray(children)
+            ? children.map(String).join("")
+            : "文档";
+      const isDoc = Boolean(
+        url && (isDocumentUrl(url) || looksLikeDocumentName(label)),
+      );
+      const busy = Boolean(url && options?.busyDocUrl === url);
+
+      if (isDoc && options?.onOpenDocument) {
+        return (
+          <button
+            type="button"
+            onClick={() => void options.onOpenDocument?.(url, label)}
+            disabled={busy}
+            className="doc-link"
+          >
+            {busy ? `处理中「${label}」…` : children}
+          </button>
+        );
+      }
+
+      return <a href={url || undefined}>{children}</a>;
+    },
+    img: () => null,
+  };
+}
+
+/** 助手正文：检修字段走结构化卡片，其余仍用 Markdown */
+function AssistantContent({
+  content,
+  streaming = false,
+  onOpenDocument,
+  busyDocUrl,
+}: {
+  content: string;
+  streaming?: boolean;
+  onOpenDocument?: (url: string, title?: string) => void;
+  busyDocUrl?: string | null;
+}) {
+  const mdComponents = markdownLinkComponents({ onOpenDocument, busyDocUrl });
+
+  if (!hasInspectionFields(content)) {
+    return (
+      <div className={`chat-md${streaming ? " is-streaming" : ""}`}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+          {content}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+
+  const blocks = parseInspectionBlocks(content);
+  return (
+    <div
+      className={`chat-md is-inspection${streaming ? " is-streaming" : ""}`}
+    >
+      {blocks.map((block, i) => {
+        if (block.kind === "text") {
+          return (
+            <ReactMarkdown
+              key={`t-${i}`}
+              remarkPlugins={[remarkGfm]}
+              components={mdComponents}
+            >
+              {block.text}
+            </ReactMarkdown>
+          );
+        }
+
+        const isSummary =
+          block.fields.length === 1 &&
+          (block.fields[0].name === "检测总结" ||
+            (block.fields[0].name === "台账" &&
+              /外观部件已全部检查完成/.test(block.fields[0].value)));
+
+        const resultField = block.fields.find((f) => f.name === "结果");
+        const isProblem =
+          Boolean(resultField) && /存在问题/.test(resultField!.value);
+
+        return (
+          <div
+            key={`p-${i}`}
+            className={`insp-card${isSummary ? " is-summary" : ""}${
+              isProblem ? " is-problem" : ""
+            }`}
+          >
+            {block.fields.map((f, j) => (
+              <div
+                key={`${f.name}-${j}`}
+                className="insp-row"
+                data-field={f.name}
+              >
+                <span className="insp-label">【{f.name}】</span>
+                <span className="insp-value">{f.value}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -2593,52 +2727,11 @@ function MessageBubbleBody({
               </div>
             ) : null}
             {displayContent.trim() ? (
-              <div
-                className={`chat-md${
-                  hasInspectionFields(displayContent) ? " is-inspection" : ""
-                }`}
-              >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    a: ({ href, children }) => {
-                      const url = typeof href === "string" ? href : "";
-                      const label =
-                        typeof children === "string"
-                          ? children
-                          : Array.isArray(children)
-                            ? children.map(String).join("")
-                            : "文档";
-                      const isDoc = Boolean(
-                        url &&
-                          (isDocumentUrl(url) || looksLikeDocumentName(label)),
-                      );
-                      const busy = Boolean(url && busyDocUrl === url);
-
-                      // 点击文档链接 → 应用内预览；下载放在预览顶栏，避免手机误点直接下载
-                      if (isDoc && onOpenDocument) {
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => void onOpenDocument(url, label)}
-                            disabled={busy}
-                            className="doc-link"
-                          >
-                            {busy ? `处理中「${label}」…` : children}
-                          </button>
-                        );
-                      }
-
-                      return <a href={url || undefined}>{children}</a>;
-                    },
-                    img: () => null,
-                  }}
-                >
-                  {formatAssistantMarkdown(
-                    stripAssistantImages(displayContent),
-                  )}
-                </ReactMarkdown>
-              </div>
+              <AssistantContent
+                content={stripAssistantImages(displayContent)}
+                onOpenDocument={onOpenDocument}
+                busyDocUrl={busyDocUrl}
+              />
             ) : null}
           </>
         )}
